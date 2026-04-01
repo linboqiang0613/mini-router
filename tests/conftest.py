@@ -23,9 +23,30 @@ def basic_config() -> RouterConfig:
         models={
             "base_url": "http://localhost:8000/v1",
             "classifier": ClassifierConfig(
-                intent=ClassifierModelConfig(model="intent-classifier", enabled=True),
-                pii=ClassifierModelConfig(model="pii-classifier", enabled=False),
-                security=ClassifierModelConfig(model="security-classifier", enabled=False),
+                intent=ClassifierModelConfig(
+                    model="intent-classifier",
+                    enabled=True,
+                    timeout=10.0,
+                    fallback_label=None,
+                ),
+                pii=ClassifierModelConfig(
+                    model="pii-classifier",
+                    enabled=False,
+                    timeout=10.0,
+                    fallback_label="detected",
+                ),
+                security=ClassifierModelConfig(
+                    model="security-classifier",
+                    enabled=False,
+                    timeout=10.0,
+                    fallback_label="detected",
+                ),
+                complexity=ClassifierModelConfig(
+                    model="complexity-classifier",
+                    enabled=False,
+                    timeout=10.0,
+                    fallback_label="medium",
+                ),
             ),
         },
         signals=SignalsConfig(
