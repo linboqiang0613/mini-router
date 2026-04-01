@@ -214,6 +214,47 @@ class SecurityClassifier(MLClassifierBase):
         return "security"
 
 
+class ComplexityClassifier(MLClassifierBase):
+    """Complexity analysis using ML API."""
+
+    PROMPT = (
+        "Analyze the complexity of the following query. "
+        "Consider factors like: length, number of tasks, reasoning required, "
+        "domain knowledge needed, and ambiguity. "
+        "Respond with exactly one of: 'simple', 'medium', or 'complex'. "
+        "simple: short, single task, straightforward\n"
+        "medium: moderate length, may need some reasoning\n"
+        "complex: long, multiple tasks, requires deep reasoning or domain expertise"
+    )
+
+    def __init__(
+        self,
+        config: ClassifierModelConfig,
+        client: OpenAIClient,
+        fallback_label: str = "medium",  # Neutral default
+    ) -> None:
+        super().__init__(
+            config=config,
+            client=client,
+            task_type=TaskType.COMPLEXITY,
+            prompt=self.PROMPT,
+            fallback_label=fallback_label,
+        )
+
+    def _parse_response(self, content: str) -> str:
+        label = content.strip().lower()
+        # Normalize labels
+        if label in ("simple", "easy", "low"):
+            return "simple"
+        elif label in ("complex", "hard", "high", "difficult"):
+            return "complex"
+        else:
+            return "medium"
+
+    def _get_field_name(self) -> str:
+        return "complexity"
+
+
 class KeywordClassifier(Classifier):
     """Keyword-based classifier for simple rule matching."""
 
