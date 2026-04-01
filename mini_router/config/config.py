@@ -48,6 +48,7 @@ class ClassifierModelConfig(BaseModel):
         None,
         description="Default label when timeout/error occurs. None means no fallback"
     )
+    threshold: int | None = Field(None, description="Threshold for context_length classifier only")
 
 
 class ClassifierConfig(BaseModel):
@@ -57,6 +58,7 @@ class ClassifierConfig(BaseModel):
     pii: ClassifierModelConfig | None = None
     security: ClassifierModelConfig | None = None
     complexity: ClassifierModelConfig | None = None
+    context_length: ClassifierModelConfig | None = None
 
 
 class EmbedderConfig(BaseModel):
@@ -72,6 +74,7 @@ class ModelsConfig(BaseModel):
     base_url: str = Field("http://localhost:8000/v1", description="Base URL for model API")
     api_key: str = Field("", description="API key (optional for local deployment)")
     timeout: float = Field(60.0, description="Request timeout in seconds")
+    tokenizer_path: str | None = Field(None, description="HuggingFace tokenizer directory path")
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
     embedder: EmbedderConfig | None = None
 
@@ -137,6 +140,7 @@ class ModelRef(BaseModel):
 
     model: str = Field(..., description="Model name")
     weight: float = Field(1.0, description="Selection weight")
+    max_tokens: int | None = Field(None, description="Maximum context tokens this model supports")
 
 
 class DecisionAction(str, Enum):
