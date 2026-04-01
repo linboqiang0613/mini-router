@@ -1,0 +1,173 @@
+# Mini-Router 配置文件
+
+# 服务配置
+server:
+  host: "0.0.0.0"
+  port: 8080
+  max_workers: 10
+
+# 模型配置
+models:
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"  # 大模型 API 地址
+  api_key: "sk-sp-87502e407ca9427c97c6ee9fdedaabdb"      # API Key (本地部署可留空)
+  timeout: 120.0                                          # 请求超时时间(秒)
+
+  # 分类器配置
+  classifier:
+    intent:
+      model: "qwen3.5-plus"         # Intent 分类模型名称
+      enabled: true
+    pii:
+      model: "qwen3.5-plus"            # PII 检测模型名称
+      enabled: true
+    security:
+      model: "qwen3.5-plus"       # 安全检测模型名称
+      enabled: true
+    complexity:
+      model: "qwen3.5-plus"     # 复杂度分类模型名称
+      enabled: true
+
+  # 嵌入模型配置 (用于语义缓存)
+  embedder:
+    model: "text-embedding-model"
+    enabled: false
+
+# 信号规则
+signals:
+  keyword_rules:
+    - name: "code_related"
+      keywords: ["code", "programming", "function", "debug", "error", "python", "java", "golang"]
+      operator: "any"
+      case_sensitive: false
+
+    - name: "math_related"
+      keywords: ["calculate", "math", "equation", "solve", "compute", "formula"]
+      operator: "any"
+      case_sensitive: false
+
+    - name: "translation"
+      keywords: ["translate", "翻译", "language", "语言"]
+      operator: "any"
+      case_sensitive: false
+
+  embedding_rules: []
+
+  categories: []
+
+# 决策规则
+decisions:
+  # 高优先级: 安全拦截
+  - name: "block_pii"
+    priority: 100
+    rules:
+      type: "signal"
+      signal: "pii"
+      condition: "detected"
+    model_refs: []
+    action: "reject"
+    reject_message: "PII detected in request. Please remove personal information."
+
+  - name: "block_security_threat"
+    priority: 99
+    rules:
+      type: "signal"
+      signal: "security"
+      condition: "detected"
+    model_refs: []
+    action: "reject"
+    reject_message: "Security threat detected. Request blocked."
+
+  # 复杂度路由: 高复杂度使用强模型
+  - name: "route_complex_query"
+    priority: 50
+    rules:
+      type: "signal"
+      signal: "complexity"
+      condition: "complex"
+    model_refs:
+      - model: "qwen3-max"
+        weight: 1.0
+
+  # 中优先级: 专项路由
+  - name: "route_to_code_model"
+    priority: 10
+    rules:
+      type: "keyword"
+      name: "code_related"
+    model_refs:
+      - model: "codellama-70b"
+        weight: 1.0
+      - model: "deepseek-coder"
+        weight: 0.8
+
+  - name: "route_to_math_model"
+    priority: 5
+    rules:
+      type: "keyword"
+      name: "math_related"
+    model_refs:
+      - model: "llama-3-math"
+        weight: 1.0
+
+  - name: "route_translation"
+    priority: 5
+    rules:
+      type: "keyword"
+      name: "translation"
+    model_refs:
+      - model: "qwen-translate"
+        weight: 1.0
+
+  # 低优先级: 兜底路由 (匹配所有请求)
+  - name: "default_route"
+    priority: 0
+    rules:
+      type: "or"
+      children:
+        - type: "keyword"
+          name: "code_related"
+        - type: "keyword"
+          name: "math_related"
+        - type: "keyword"
+          name: "translation"
+    model_refs:
+      - model: "qwen3.5-plus"
+        weight: 1.0
+
+  # 最终兜底: 无条件匹配所有请求
+  - name: "catch_all"
+    priority: -100
+    rules:
+      type: "or"
+      children:
+        - type: "signal"
+          signal: "complexity"
+          condition: "simple"
+        - type: "signal"
+          signal: "complexity"
+          condition: "medium"
+        - type: "signal"
+          signal: "complexity"
+          condition: "complex"
+    model_refs:
+      - model: "qwen3.5-plus"
+        weight: 1.0
+
+# 模型选择策略
+selection:
+  strategy: "latency_aware"  # 可选: priority, confidence, weighted, latency_aware
+
+  # 延迟感知选择配置 (当 strategy 为 latency_aware 时生效)
+  latency_aware:
+    tpot_percentile: 50        # TPOT (Time Per Output Token) 百分位数
+    ttft_percentile: 90        # TTFT (Time To First Token) 百分位数
+    latency_percentile: 50     # 通用延迟百分位数
+    min_observations: 3        # 最小观测次数才开始使用延迟数据
+    fallback_to_weight: true   # 无延迟数据时回退到权重选择
+    weight_blend: 0.3          # 权重混合因子 (0=纯延迟, 1=纯权重)
+
+# 缓存配置
+cache:
+  enabled: true
+  similarity_threshold: 0.95
+  max_entries: 10000

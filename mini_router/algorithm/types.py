@@ -1,0 +1,45 @@
+"""Types for model selection."""
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+
+
+class SelectionMethod(str, Enum):
+    """Available selection methods."""
+
+    STATIC = "static"
+    ROUND_ROBIN = "round_robin"
+    WEIGHTED = "weighted"
+    LATENCY_AWARE = "latency_aware"
+
+
+@dataclass
+class SelectionContext:
+    """Context for model selection."""
+
+    query: str
+    candidate_models: list["ModelRef"]
+    user_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    # Latency-aware selection parameters
+    latency_percentile: int = 50
+    tpot_percentile: int = 50
+    ttft_percentile: int = 90
+    min_observations: int = 3
+    fallback_to_weight: bool = True
+    weight_blend: float = 0.5
+
+
+@dataclass
+class SelectionResult:
+    """Result of model selection."""
+
+    selected_model: str
+    confidence: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# Import here to avoid circular dependency
+from mini_router.config.config import ModelRef  # noqa: E402
