@@ -37,7 +37,8 @@ class TestTaskType:
 class TestKeywordClassifier:
     """Tests for KeywordClassifier."""
 
-    def test_any_operator_match(self) -> None:
+    @pytest.mark.asyncio
+    async def test_any_operator_match(self) -> None:
         """Test ANY operator - any keyword match."""
         classifier = KeywordClassifier([
             KeywordRule(
@@ -48,13 +49,14 @@ class TestKeywordClassifier:
             ),
         ])
 
-        result = classifier.classify("How do I debug this code?")
-        assert result["code_related"] is True
+        result = await classifier.classify("How do I debug this code?")
+        assert result.keyword_rules["code_related"] is True
 
-        result = classifier.classify("What is the weather?")
-        assert result.get("code_related", False) is False
+        result = await classifier.classify("What is the weather?")
+        assert result.keyword_rules.get("code_related", False) is False
 
-    def test_all_operator_match(self) -> None:
+    @pytest.mark.asyncio
+    async def test_all_operator_match(self) -> None:
         """Test ALL operator - all keywords must match."""
         classifier = KeywordClassifier([
             KeywordRule(
@@ -65,13 +67,14 @@ class TestKeywordClassifier:
             ),
         ])
 
-        result = classifier.classify("How do I debug this code?")
-        assert result["code_debug"] is True
+        result = await classifier.classify("How do I debug this code?")
+        assert result.keyword_rules["code_debug"] is True
 
-        result = classifier.classify("I have some code")
-        assert result.get("code_debug", False) is False
+        result = await classifier.classify("I have some code")
+        assert result.keyword_rules.get("code_debug", False) is False
 
-    def test_case_sensitive(self) -> None:
+    @pytest.mark.asyncio
+    async def test_case_sensitive(self) -> None:
         """Test case sensitive matching."""
         classifier = KeywordClassifier([
             KeywordRule(
@@ -82,11 +85,11 @@ class TestKeywordClassifier:
             ),
         ])
 
-        result = classifier.classify("CODE is uppercase")
-        assert result["uppercase"] is True
+        result = await classifier.classify("CODE is uppercase")
+        assert result.keyword_rules["uppercase"] is True
 
-        result = classifier.classify("code is lowercase")
-        assert result.get("uppercase", False) is False
+        result = await classifier.classify("code is lowercase")
+        assert result.keyword_rules.get("uppercase", False) is False
 
 
 class TestKeywordClassifierNewInterface:
