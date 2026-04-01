@@ -7,19 +7,122 @@ from typing import Any
 import structlog
 
 from mini_router.client import OpenAIClient
-from mini_router.config.config import ClassifierConfig, KeywordRule, Operator
+from mini_router.config.config import ClassifierConfig, ClassifierModelConfig, KeywordRule, Operator
 from mini_router.signal_layer.types import SignalMatches, TaskResult, TaskType
 
 logger = structlog.get_logger()
 
 
 class Classifier(ABC):
-    """Abstract classifier interface."""
+    """Abstract base class for all classifiers."""
 
     @abstractmethod
-    async def classify(self, text: str, tasks: list[TaskType]) -> SignalMatches:
-        """Classify text and return signal matches."""
+    async def classify(self, text: str) -> SignalMatches:
+        """
+        Classify text and return SignalMatches.
+
+        Each subclass fills only its responsible field.
+        """
         pass
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Classifier name for logging and debugging."""
+        pass
+
+
+class MLClassifierBase(Classifier):
+    """Base class for ML-based classifiers with timeout and fallback."""
+
+    def __init__(
+        self,
+        config: ClassifierModelConfig,
+        client: OpenAIClient,
+        task_type: TaskType,
+        prompt: str,
+        fallback_label: str | None = None,
+    ) -> None:
+        self.config = config
+        self.client = client
+        self.task_type = task_type
+        self.prompt = prompt
+        self._fallback_label = fallback_label
+
+    @property
+    def name(self) -> str:
+        return self.task_type.value
+
+    @abstractmethod
+    def _parse_response(self, content: str) -> str:
+        """Parse API response content to extract label."""
+        pass
+
+    @abstractmethod
+    def _get_field_name(self) -> str:
+        """Get SignalMatches field name for this classifier."""
+        pass
+
+    async def classify(self, text: str) -> SignalMatches:
+        """Classify with timeout control and fallback."""
+        if not self.config.enabled:
+            return SignalMatches()
+
+        try:
+            result = await asyncio.wait_for(
+                self._call_api(text),
+                timeout=self.config.timeout
+            )
+            return SignalMatches(**{self._get_field_name(): result})
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"{self.name}_classifier_timeout",
+                timeout=self.config.timeout,
+                fallback=self._fallback_label,
+            )
+            return self._create_fallback_result()
+        except Exception as e:
+            logger.error(
+                f"{self.name}_classifier_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                fallback=self._fallback_label,
+            )
+            return self._create_fallback_result()
+
+    async def _call_api(self, text: str) -> TaskResult:
+        """Call OpenAI API for classification."""
+        response = await self.client.chat_completion(
+            model=self.config.model,
+            messages=[
+                {"role": "system", "content": self.prompt},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=50,
+        )
+
+        content = response["choices"][0]["message"]["content"]
+        label = self._parse_response(content)
+
+        return TaskResult(
+            task=self.task_type,
+            label=label,
+            confidence=1.0,
+        )
+
+    def _create_fallback_result(self) -> SignalMatches:
+        """Create fallback result when timeout or error."""
+        if self._fallback_label is None:
+            return SignalMatches()
+
+        return SignalMatches(
+            **{self._get_field_name(): TaskResult(
+                task=self.task_type,
+                label=self._fallback_label,
+                confidence=0.0,
+                metadata={"fallback": True},
+            )}
+        )
 
 
 class KeywordClassifier:

@@ -7,6 +7,22 @@ from mini_router.signal_layer.classifier import KeywordClassifier
 from mini_router.signal_layer.types import SignalMatches, TaskResult, TaskType
 
 
+class TestClassifierABC:
+    """Tests for Classifier abstract base class."""
+
+    def test_classifier_has_classify_method(self) -> None:
+        """Test Classifier has abstract classify method."""
+        from mini_router.signal_layer.classifier import Classifier
+        import inspect
+        assert hasattr(Classifier, 'classify')
+        assert inspect.iscoroutinefunction(Classifier.classify)
+
+    def test_classifier_has_name_property(self) -> None:
+        """Test Classifier has abstract name property."""
+        from mini_router.signal_layer.classifier import Classifier
+        assert hasattr(Classifier, 'name')
+
+
 class TestTaskType:
     """Tests for TaskType enum."""
 
