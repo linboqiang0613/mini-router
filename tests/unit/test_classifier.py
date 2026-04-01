@@ -1,5 +1,7 @@
 """Tests for classifier module."""
 
+import asyncio
+
 import pytest
 
 from mini_router.config.config import KeywordRule, Operator
@@ -431,3 +433,77 @@ class TestUnifiedClassifierNewInterface:
         from mini_router.signal_layer.classifier import UnifiedClassifier
         unified = UnifiedClassifier([])
         assert unified.name == "unified"
+
+
+class TestMLClassifierTimeoutFallback:
+    """Tests for ML classifier timeout and fallback behavior."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_fallback_result(self) -> None:
+        """Test timeout returns fallback with confidence 0.0."""
+        from mini_router.signal_layer.classifier import PIIClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+        from unittest.mock import AsyncMock
+
+        config = ClassifierModelConfig(
+            model="test-model",
+            enabled=True,
+            timeout=1.0,  # Short timeout
+            fallback_label="detected",
+        )
+
+        # Mock client that takes longer than timeout
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        client.chat_completion = AsyncMock(side_effect=lambda *args, **kwargs: asyncio.sleep(2))
+
+        classifier = PIIClassifier(config, client)
+
+        result = await classifier.classify("test text")
+        assert result.pii is not None
+        assert result.pii.label == "detected"
+        assert result.pii.confidence == 0.0
+        assert result.pii.metadata.get("fallback") is True
+
+    @pytest.mark.asyncio
+    async def test_disabled_classifier_returns_empty(self) -> None:
+        """Test disabled classifier returns empty SignalMatches."""
+        from mini_router.signal_layer.classifier import IntentClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(
+            model="test-model",
+            enabled=False,
+            timeout=10.0,
+            fallback_label="question",
+        )
+
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = IntentClassifier(config, client)
+
+        result = await classifier.classify("test text")
+        assert result.intent is None
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_returns_empty_on_error(self) -> None:
+        """Test classifier with no fallback returns empty SignalMatches on error."""
+        from mini_router.signal_layer.classifier import IntentClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+        from unittest.mock import AsyncMock
+
+        config = ClassifierModelConfig(
+            model="test-model",
+            enabled=True,
+            timeout=10.0,
+            fallback_label=None,  # No fallback
+        )
+
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        client.chat_completion = AsyncMock(side_effect=Exception("API error"))
+
+        classifier = IntentClassifier(config, client)
+
+        result = await classifier.classify("test text")
+        assert result.intent is None
