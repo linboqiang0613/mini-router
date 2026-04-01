@@ -8,11 +8,11 @@ import yaml
 from pydantic import BaseModel, Field
 
 
-class SelectionStrategy(str, Enum):
-    """Model selection strategy."""
+class SelectionMethod(str, Enum):
+    """Available selection methods."""
 
-    PRIORITY = "priority"
-    CONFIDENCE = "confidence"
+    STATIC = "static"
+    ROUND_ROBIN = "round_robin"
     WEIGHTED = "weighted"
     LATENCY_AWARE = "latency_aware"
 
@@ -174,7 +174,7 @@ class LatencyAwareConfig(BaseModel):
 class SelectionConfig(BaseModel):
     """Configuration for model selection."""
 
-    strategy: SelectionStrategy = Field(SelectionStrategy.PRIORITY)
+    strategy: SelectionMethod = Field(SelectionMethod.STATIC)
     latency_aware: LatencyAwareConfig = Field(default_factory=LatencyAwareConfig)
 
 
