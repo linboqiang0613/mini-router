@@ -89,6 +89,56 @@ class TestKeywordClassifier:
         assert result.get("uppercase", False) is False
 
 
+class TestKeywordClassifierNewInterface:
+    """Tests for KeywordClassifier with new interface."""
+
+    @pytest.mark.asyncio
+    async def test_classify_returns_signal_matches(self) -> None:
+        """Test classify returns SignalMatches with keyword_rules."""
+        from mini_router.signal_layer.classifier import KeywordClassifier
+        from mini_router.signal_layer.types import SignalMatches
+        from mini_router.config.config import KeywordRule, Operator
+
+        classifier = KeywordClassifier([
+            KeywordRule(
+                name="code_related",
+                keywords=["code", "debug"],
+                operator=Operator.ANY,
+                case_sensitive=False,
+            ),
+        ])
+
+        result = await classifier.classify("How do I debug this code?")
+        assert isinstance(result, SignalMatches)
+        assert result.keyword_rules == {"code_related": True}
+
+    @pytest.mark.asyncio
+    async def test_classify_no_match(self) -> None:
+        """Test classify with no keyword match."""
+        from mini_router.signal_layer.classifier import KeywordClassifier
+        from mini_router.config.config import KeywordRule, Operator
+
+        classifier = KeywordClassifier([
+            KeywordRule(
+                name="code_related",
+                keywords=["code", "debug"],
+                operator=Operator.ANY,
+                case_sensitive=False,
+            ),
+        ])
+
+        result = await classifier.classify("What is the weather?")
+        assert result.keyword_rules == {"code_related": False}
+
+    def test_name_property(self) -> None:
+        """Test name property returns 'keyword'."""
+        from mini_router.signal_layer.classifier import KeywordClassifier
+        from mini_router.config.config import KeywordRule, Operator
+
+        classifier = KeywordClassifier([])
+        assert classifier.name == "keyword"
+
+
 class TestSignalMatches:
     """Tests for SignalMatches dataclass."""
 
@@ -135,6 +185,48 @@ class TestSignalMatches:
         assert matches.has_security_threat() is False
 
 
+class TestPIIClassifier:
+    """Tests for PIIClassifier."""
+
+    def test_pii_classifier_exists(self) -> None:
+        """Test PIIClassifier can be imported."""
+        from mini_router.signal_layer.classifier import PIIClassifier
+        assert PIIClassifier is not None
+
+    def test_pii_classifier_name(self) -> None:
+        """Test PIIClassifier name property."""
+        from mini_router.signal_layer.classifier import PIIClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = PIIClassifier(config, client)
+        assert classifier.name == "pii"
+
+    def test_pii_default_fallback_is_detected(self) -> None:
+        """Test PIIClassifier default fallback is 'detected'."""
+        from mini_router.signal_layer.classifier import PIIClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = PIIClassifier(config, client)
+        assert classifier._fallback_label == "detected"
+
+    def test_pii_field_name(self) -> None:
+        """Test PIIClassifier field name is 'pii'."""
+        from mini_router.signal_layer.classifier import PIIClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = PIIClassifier(config, client)
+        assert classifier._get_field_name() == "pii"
+
+
 class TestClassifierModelConfig:
     """Tests for ClassifierModelConfig."""
 
@@ -155,3 +247,34 @@ class TestClassifierModelConfig:
         from mini_router.config.config import ClassifierModelConfig
         config = ClassifierModelConfig(model="test-model", fallback_label="detected")
         assert config.fallback_label == "detected"
+
+
+class TestIntentClassifier:
+    """Tests for IntentClassifier."""
+
+    def test_intent_classifier_exists(self) -> None:
+        """Test IntentClassifier can be imported."""
+        from mini_router.signal_layer.classifier import IntentClassifier
+        assert IntentClassifier is not None
+
+    def test_intent_classifier_name(self) -> None:
+        """Test IntentClassifier name property."""
+        from mini_router.signal_layer.classifier import IntentClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = IntentClassifier(config, client)
+        assert classifier.name == "intent"
+
+    def test_intent_field_name(self) -> None:
+        """Test IntentClassifier field name is 'intent'."""
+        from mini_router.signal_layer.classifier import IntentClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = IntentClassifier(config, client)
+        assert classifier._get_field_name() == "intent"

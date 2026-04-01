@@ -125,6 +125,35 @@ class MLClassifierBase(Classifier):
         )
 
 
+class IntentClassifier(MLClassifierBase):
+    """Intent classification using ML API."""
+
+    PROMPT = (
+        "Classify the intent of the following text. "
+        "Respond with just the intent label."
+    )
+
+    def __init__(
+        self,
+        config: ClassifierModelConfig,
+        client: OpenAIClient,
+        fallback_label: str | None = None,
+    ) -> None:
+        super().__init__(
+            config=config,
+            client=client,
+            task_type=TaskType.INTENT,
+            prompt=self.PROMPT,
+            fallback_label=fallback_label,
+        )
+
+    def _parse_response(self, content: str) -> str:
+        return content.strip()
+
+    def _get_field_name(self) -> str:
+        return "intent"
+
+
 class KeywordClassifier:
     """Keyword-based classifier for simple rule matching."""
 
