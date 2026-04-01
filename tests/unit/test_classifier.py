@@ -278,3 +278,93 @@ class TestIntentClassifier:
         client = OpenAIClient(base_url="http://localhost:8000/v1")
         classifier = IntentClassifier(config, client)
         assert classifier._get_field_name() == "intent"
+
+
+class TestSecurityClassifier:
+    """Tests for SecurityClassifier."""
+
+    def test_security_classifier_exists(self) -> None:
+        """Test SecurityClassifier can be imported."""
+        from mini_router.signal_layer.classifier import SecurityClassifier
+        assert SecurityClassifier is not None
+
+    def test_security_classifier_name(self) -> None:
+        """Test SecurityClassifier name property."""
+        from mini_router.signal_layer.classifier import SecurityClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = SecurityClassifier(config, client)
+        assert classifier.name == "security"
+
+    def test_security_default_fallback_is_detected(self) -> None:
+        """Test SecurityClassifier default fallback is 'detected'."""
+        from mini_router.signal_layer.classifier import SecurityClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = SecurityClassifier(config, client)
+        assert classifier._fallback_label == "detected"
+
+    def test_security_field_name(self) -> None:
+        """Test SecurityClassifier field name is 'security'."""
+        from mini_router.signal_layer.classifier import SecurityClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = SecurityClassifier(config, client)
+        assert classifier._get_field_name() == "security"
+
+class TestComplexityClassifier:
+    """Tests for ComplexityClassifier."""
+
+    def test_complexity_classifier_exists(self) -> None:
+        """Test ComplexityClassifier can be imported."""
+        from mini_router.signal_layer.classifier import ComplexityClassifier
+        assert ComplexityClassifier is not None
+
+    def test_complexity_classifier_name(self) -> None:
+        """Test ComplexityClassifier name property."""
+        from mini_router.signal_layer.classifier import ComplexityClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = ComplexityClassifier(config, client)
+        assert classifier.name == "complexity"
+
+    def test_complexity_default_fallback_is_medium(self) -> None:
+        """Test ComplexityClassifier default fallback is 'medium'."""
+        from mini_router.signal_layer.classifier import ComplexityClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = ComplexityClassifier(config, client)
+        assert classifier._fallback_label == "medium"
+
+    def test_complexity_parse_response_normalizes_labels(self) -> None:
+        """Test ComplexityClassifier normalizes labels."""
+        from mini_router.signal_layer.classifier import ComplexityClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(model="test-model")
+        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        classifier = ComplexityClassifier(config, client)
+
+        assert classifier._parse_response("simple") == "simple"
+        assert classifier._parse_response("easy") == "simple"
+        assert classifier._parse_response("low") == "simple"
+        assert classifier._parse_response("complex") == "complex"
+        assert classifier._parse_response("hard") == "complex"
+        assert classifier._parse_response("medium") == "medium"
+        assert classifier._parse_response("unknown") == "medium"
