@@ -371,3 +371,63 @@ class TestComplexityClassifier:
         assert classifier._parse_response("hard") == "complex"
         assert classifier._parse_response("medium") == "medium"
         assert classifier._parse_response("unknown") == "medium"
+
+
+class TestUnifiedClassifierNewInterface:
+    """Tests for simplified UnifiedClassifier."""
+
+    @pytest.mark.asyncio
+    async def test_unified_combines_multiple_classifiers(self) -> None:
+        """Test UnifiedClassifier combines results from multiple classifiers."""
+        from mini_router.signal_layer.classifier import (
+            UnifiedClassifier,
+            KeywordClassifier,
+        )
+        from mini_router.config.config import KeywordRule, Operator
+
+        keyword = KeywordClassifier([
+            KeywordRule(
+                name="test_rule",
+                keywords=["test"],
+                operator=Operator.ANY,
+                case_sensitive=False,
+            ),
+        ])
+
+        unified = UnifiedClassifier([keyword])
+        result = await unified.classify("this is a test")
+
+        assert result.keyword_rules == {"test_rule": True}
+
+    @pytest.mark.asyncio
+    async def test_unified_merges_signal_matches(self) -> None:
+        """Test UnifiedClassifier properly merges SignalMatches."""
+        from mini_router.signal_layer.classifier import UnifiedClassifier
+        from mini_router.signal_layer.types import SignalMatches, TaskResult, TaskType
+
+        # Mock classifier that returns intent
+        class MockIntentClassifier:
+            name = "mock_intent"
+            async def classify(self, text: str) -> SignalMatches:
+                return SignalMatches(
+                    intent=TaskResult(task=TaskType.INTENT, label="question", confidence=1.0)
+                )
+
+        # Mock classifier that returns keyword
+        class MockKeywordClassifier:
+            name = "mock_keyword"
+            async def classify(self, text: str) -> SignalMatches:
+                return SignalMatches(keyword_rules={"test": True})
+
+        unified = UnifiedClassifier([MockIntentClassifier(), MockKeywordClassifier()])
+        result = await unified.classify("test question")
+
+        assert result.keyword_rules == {"test": True}
+        assert result.intent is not None
+        assert result.intent.label == "question"
+
+    def test_unified_name_property(self) -> None:
+        """Test UnifiedClassifier name property."""
+        from mini_router.signal_layer.classifier import UnifiedClassifier
+        unified = UnifiedClassifier([])
+        assert unified.name == "unified"

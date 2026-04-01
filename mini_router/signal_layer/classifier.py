@@ -447,63 +447,59 @@ class MLClassifier:
             return None
 
 
-class UnifiedClassifier:
-    """Unified classifier combining keyword and ML classifiers."""
+class UnifiedClassifier(Classifier):
+    """Unified classifier combining all classifier instances."""
 
-    def __init__(
-        self,
-        keyword_classifier: KeywordClassifier,
-        ml_classifier: MLClassifier | None = None,
-    ) -> None:
-        self.keyword_classifier = keyword_classifier
-        self.ml_classifier = ml_classifier
+    def __init__(self, classifiers: list[Classifier]) -> None:
+        self.classifiers = classifiers
 
-    async def classify(
+    @property
+    def name(self) -> str:
+        return "unified"
+
+    async def classify(self, text: str) -> SignalMatches:
+        """
+        Run all classifiers in parallel and merge results.
+
+        Uses asyncio.gather with return_exceptions=True to ensure
+        single classifier failure doesn't affect others.
+        """
+        results = await asyncio.gather(
+            *[c.classify(text) for c in self.classifiers],
+            return_exceptions=True,
+        )
+
+        final_matches = SignalMatches()
+        for classifier, result in zip(self.classifiers, results):
+            if isinstance(result, Exception):
+                logger.error(
+                    "classifier_failed",
+                    classifier=classifier.name,
+                    error=str(result),
+                )
+                continue
+            if isinstance(result, SignalMatches):
+                final_matches = self._merge_matches(final_matches, result)
+
+        return final_matches
+
+    def _merge_matches(
         self,
-        text: str,
-        tasks: list[TaskType] | None = None,
+        base: SignalMatches,
+        new: SignalMatches,
     ) -> SignalMatches:
-        """Classify text using all available classifiers."""
-        matches = SignalMatches()
+        """Merge two SignalMatches objects."""
+        # Merge keyword_rules
+        base.keyword_rules.update(new.keyword_rules)
 
-        # Keyword classification (always run)
-        matches.keyword_rules = (await self.keyword_classifier.classify(text)).keyword_rules
+        # Merge ML results (non-None overwrites)
+        if new.intent is not None:
+            base.intent = new.intent
+        if new.pii is not None:
+            base.pii = new.pii
+        if new.security is not None:
+            base.security = new.security
+        if new.complexity is not None:
+            base.complexity = new.complexity
 
-        # ML classification
-        if self.ml_classifier and tasks:
-            ml_tasks = asyncio.gather(
-                *[
-                    self._run_ml_task(text, task)
-                    for task in tasks
-                    if task in (TaskType.INTENT, TaskType.PII, TaskType.SECURITY, TaskType.COMPLEXITY)
-                ]
-            )
-            results = await ml_tasks
-            for result in results:
-                if result is None:
-                    continue
-                if result.task == TaskType.INTENT:
-                    matches.intent = result
-                elif result.task == TaskType.PII:
-                    matches.pii = result
-                elif result.task == TaskType.SECURITY:
-                    matches.security = result
-                elif result.task == TaskType.COMPLEXITY:
-                    matches.complexity = result
-
-        return matches
-
-    async def _run_ml_task(self, text: str, task: TaskType) -> TaskResult | None:
-        """Run a single ML classification task."""
-        if not self.ml_classifier:
-            return None
-
-        if task == TaskType.INTENT:
-            return await self.ml_classifier.classify_intent(text)
-        elif task == TaskType.PII:
-            return await self.ml_classifier.classify_pii(text)
-        elif task == TaskType.SECURITY:
-            return await self.ml_classifier.classify_security(text)
-        elif task == TaskType.COMPLEXITY:
-            return await self.ml_classifier.classify_complexity(text)
-        return None
+        return base
