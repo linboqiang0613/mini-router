@@ -13,7 +13,14 @@ from mini_router.decision.engine import Engine
 from mini_router.decision.types import DecisionResult
 from mini_router.metrics.latency import LatencyTracker
 from mini_router.plugin.cache import Cache, CacheEntry, MemoryCache, SemanticCache
-from mini_router.signal_layer.classifier import KeywordClassifier, MLClassifier, UnifiedClassifier
+from mini_router.signal_layer.classifier import (
+    KeywordClassifier,
+    UnifiedClassifier,
+    IntentClassifier,
+    PIIClassifier,
+    SecurityClassifier,
+    ComplexityClassifier,
+)
 from mini_router.signal_layer.embedder import Embedder, MockEmbedder, OpenAIEmbedder
 from mini_router.signal_layer.types import SignalMatches, TaskType
 
@@ -54,20 +61,65 @@ class Router:
 
     def _initialize_components(self) -> None:
         """Initialize all router components."""
-        # Signal layer
-        keyword_classifier = KeywordClassifier(self.config.signals.keyword_rules)
+        from mini_router.signal_layer.classifier import Classifier
 
-        # OpenAI client for ML classifiers and embedder (also used by ChatProxy)
+        # === Signal Layer ===
+        classifiers: list[Classifier] = []
+
+        # 1. KeywordClassifier (always added)
+        keyword_classifier = KeywordClassifier(self.config.signals.keyword_rules)
+        classifiers.append(keyword_classifier)
+
+        # 2. OpenAI Client
         self._client = OpenAIClient(
             base_url=self.config.models.base_url,
             api_key=self.config.models.api_key,
             timeout=self.config.models.timeout,
         )
-        ml_classifier = MLClassifier(self.config.models.classifier, self._client)
 
-        self.classifier = UnifiedClassifier(keyword_classifier, ml_classifier)
+        # 3. ML Classifiers (added based on config)
+        classifier_config = self.config.models.classifier
 
-        # Embedder
+        # Intent
+        if classifier_config.intent and classifier_config.intent.enabled:
+            intent_fallback = classifier_config.intent.fallback_label
+            classifiers.append(IntentClassifier(
+                config=classifier_config.intent,
+                client=self._client,
+                fallback_label=intent_fallback,
+            ))
+
+        # PII (safety-first default)
+        if classifier_config.pii and classifier_config.pii.enabled:
+            pii_fallback = classifier_config.pii.fallback_label or "detected"
+            classifiers.append(PIIClassifier(
+                config=classifier_config.pii,
+                client=self._client,
+                fallback_label=pii_fallback,
+            ))
+
+        # Security (safety-first default)
+        if classifier_config.security and classifier_config.security.enabled:
+            security_fallback = classifier_config.security.fallback_label or "detected"
+            classifiers.append(SecurityClassifier(
+                config=classifier_config.security,
+                client=self._client,
+                fallback_label=security_fallback,
+            ))
+
+        # Complexity (neutral default)
+        if classifier_config.complexity and classifier_config.complexity.enabled:
+            complexity_fallback = classifier_config.complexity.fallback_label or "medium"
+            classifiers.append(ComplexityClassifier(
+                config=classifier_config.complexity,
+                client=self._client,
+                fallback_label=complexity_fallback,
+            ))
+
+        # 4. UnifiedClassifier
+        self.classifier = UnifiedClassifier(classifiers)
+
+        # === Embedder ===
         self.embedder: Embedder
         if self.config.models.embedder and self.config.models.embedder.enabled:
             self.embedder = OpenAIEmbedder(
@@ -79,17 +131,16 @@ class Router:
         else:
             self.embedder = MockEmbedder()
 
-        # Decision layer
+        # === Decision Layer ===
         self.decision_engine = Engine(
             decisions=self.config.decisions,
             strategy=self.config.selection.strategy.value,
         )
 
-        # Algorithm layer - pass latency tracker to registry
+        # === Algorithm Layer ===
         self.selector_registry = Registry(latency_tracker=self._latency_tracker)
 
-        # Plugin layer - cache
-        self.cache: Cache
+        # === Cache Layer ===
         if self.config.cache.enabled:
             self.cache = SemanticCache(
                 embedder=self.embedder,
@@ -128,8 +179,7 @@ class Router:
             )
 
         # 2. Extract signals
-        tasks = self._get_classification_tasks()
-        signals = await self.classifier.classify(request.query, tasks)
+        signals = await self.classifier.classify(request.query)
 
         logger.debug(
             "signals_extracted",

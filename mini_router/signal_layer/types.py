@@ -8,6 +8,7 @@ from typing import Any
 class TaskType(str, Enum):
     """Classification task types."""
 
+    KEYWORD = "keyword"  # 新增：关键词匹配
     INTENT = "intent"
     PII = "pii"
     SECURITY = "security"

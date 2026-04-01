@@ -136,3 +136,22 @@ class TestRouter:
         # Both keywords match, but urgent has higher priority
         result = await router.route(RoutingRequest(query="urgent code request"))
         assert result.decision_name == "urgent_route"
+
+
+class TestRouterSignalLayerInit:
+    """Tests for Router signal layer initialization."""
+
+    def test_router_creates_unified_classifier(self, basic_config: RouterConfig) -> None:
+        """Test Router creates UnifiedClassifier with classifiers list."""
+        from mini_router.router.router import Router
+        router = Router(basic_config)
+        from mini_router.signal_layer.classifier import UnifiedClassifier
+        assert isinstance(router.classifier, UnifiedClassifier)
+
+    def test_router_includes_keyword_classifier(self, basic_config: RouterConfig) -> None:
+        """Test Router includes KeywordClassifier in unified classifier."""
+        from mini_router.router.router import Router
+        router = Router(basic_config)
+        # Check that keyword classifier is present
+        classifier_names = [c.name for c in router.classifier.classifiers]
+        assert "keyword" in classifier_names

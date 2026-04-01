@@ -15,17 +15,25 @@ models:
   # 分类器配置
   classifier:
     intent:
-      model: "qwen3.5-plus"         # Intent 分类模型名称
+      model: "qwen3.5-plus"
       enabled: true
+      timeout: 5.0
+      fallback_label: null
     pii:
-      model: "qwen3.5-plus"            # PII 检测模型名称
+      model: "qwen3.5-plus"
       enabled: true
+      timeout: 10.0
+      fallback_label: "detected"
     security:
-      model: "qwen3.5-plus"       # 安全检测模型名称
+      model: "qwen3.5-plus"
       enabled: true
+      timeout: 10.0
+      fallback_label: "detected"
     complexity:
-      model: "qwen3.5-plus"     # 复杂度分类模型名称
+      model: "qwen3.5-plus"
       enabled: true
+      timeout: 8.0
+      fallback_label: "medium"
 
   # 嵌入模型配置 (用于语义缓存)
   embedder:
