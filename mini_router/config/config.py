@@ -43,6 +43,11 @@ class ClassifierModelConfig(BaseModel):
 
     model: str = Field("glm-5", description="Model name for API calls")
     enabled: bool = Field(True, description="Whether this classifier is enabled")
+    timeout: float = Field(10.0, description="Timeout for single classification task in seconds", ge=1.0, le=60.0)
+    fallback_label: str | None = Field(
+        None,
+        description="Default label when timeout/error occurs. None means no fallback"
+    )
 
 
 class ClassifierConfig(BaseModel):

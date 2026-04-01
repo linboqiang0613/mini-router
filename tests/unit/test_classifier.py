@@ -7,6 +7,17 @@ from mini_router.signal_layer.classifier import KeywordClassifier
 from mini_router.signal_layer.types import SignalMatches, TaskResult, TaskType
 
 
+class TestTaskType:
+    """Tests for TaskType enum."""
+
+    def test_keyword_task_type_exists(self) -> None:
+        """Test KEYWORD task type exists."""
+        from mini_router.signal_layer.types import TaskType
+
+        assert TaskType.KEYWORD == "keyword"
+        assert TaskType.KEYWORD.value == "keyword"
+
+
 class TestKeywordClassifier:
     """Tests for KeywordClassifier."""
 
@@ -106,3 +117,25 @@ class TestSignalMatches:
             security=TaskResult(task=TaskType.SECURITY, label="safe", confidence=1.0),
         )
         assert matches.has_security_threat() is False
+
+
+class TestClassifierModelConfig:
+    """Tests for ClassifierModelConfig."""
+
+    def test_timeout_field_exists(self) -> None:
+        """Test timeout field with default value."""
+        from mini_router.config.config import ClassifierModelConfig
+        config = ClassifierModelConfig(model="test-model")
+        assert config.timeout == 10.0
+
+    def test_fallback_label_field_exists(self) -> None:
+        """Test fallback_label field with default None."""
+        from mini_router.config.config import ClassifierModelConfig
+        config = ClassifierModelConfig(model="test-model")
+        assert config.fallback_label is None
+
+    def test_fallback_label_can_be_set(self) -> None:
+        """Test fallback_label can be configured."""
+        from mini_router.config.config import ClassifierModelConfig
+        config = ClassifierModelConfig(model="test-model", fallback_label="detected")
+        assert config.fallback_label == "detected"
