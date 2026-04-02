@@ -20,6 +20,7 @@ from mini_router.signal_layer.classifier import (
     PIIClassifier,
     SecurityClassifier,
     ComplexityClassifier,
+    ContextLengthClassifier,
 )
 from mini_router.signal_layer.embedder import Embedder, MockEmbedder, OpenAIEmbedder
 from mini_router.signal_layer.types import SignalMatches, TaskType
@@ -116,7 +117,18 @@ class Router:
                 fallback_label=complexity_fallback,
             ))
 
-        # 4. UnifiedClassifier
+        # 5. ContextLengthClassifier (local tokenizer)
+        tokenizer_path = self.config.models.tokenizer_path
+        if tokenizer_path and classifier_config.context_length and classifier_config.context_length.enabled:
+            threshold = classifier_config.context_length.threshold or 10000
+            fallback_label = classifier_config.context_length.fallback_label or "short"
+            classifiers.append(ContextLengthClassifier(
+                tokenizer_path=tokenizer_path,
+                threshold=threshold,
+                fallback_label=fallback_label,
+            ))
+
+        # 6. UnifiedClassifier
         self.classifier = UnifiedClassifier(classifiers)
 
         # === Embedder ===
