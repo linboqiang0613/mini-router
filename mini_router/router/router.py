@@ -5,10 +5,10 @@ from typing import Any
 
 import structlog
 
-from mini_router.algorithm.selector import Registry, SelectionMethod
+from mini_router.algorithm.selector import Registry
 from mini_router.algorithm.types import SelectionContext
 from mini_router.client import OpenAIClient
-from mini_router.config.config import DecisionAction, RouterConfig, SelectionStrategy
+from mini_router.config.config import DecisionAction, RouterConfig
 from mini_router.decision.engine import Engine
 from mini_router.decision.types import DecisionResult
 from mini_router.metrics.latency import LatencyTracker
@@ -254,8 +254,9 @@ class Router:
             weight_blend=latency_config.weight_blend,
         )
 
-        method = self._get_selection_method()
-        selection_result = await self.selector_registry.select(method, selection_context)
+        selection_result = await self.selector_registry.select(
+            self.config.selection.strategy, selection_context
+        )
 
         logger.info(
             "request_routed",
@@ -288,18 +289,6 @@ class Router:
             tasks.append(TaskType.COMPLEXITY)
 
         return tasks
-
-    def _get_selection_method(self) -> SelectionMethod:
-        """Get the selection method based on configuration."""
-        strategy = self.config.selection.strategy
-        if strategy == SelectionStrategy.PRIORITY:
-            return SelectionMethod.STATIC
-        elif strategy == SelectionStrategy.WEIGHTED:
-            return SelectionMethod.STATIC
-        elif strategy == SelectionStrategy.LATENCY_AWARE:
-            return SelectionMethod.LATENCY_AWARE
-        else:
-            return SelectionMethod.STATIC
 
     async def set_cache(self, query: str, response: str) -> None:
         """Store a response in cache."""

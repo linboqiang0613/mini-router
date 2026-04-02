@@ -163,7 +163,7 @@ decisions:
 
 # 模型选择策略
 selection:
-  strategy: "latency_aware"  # 可选: priority, confidence, weighted, latency_aware
+  strategy: "latency_aware"  # 可选: static, round_robin, weighted, latency_aware
 
   # 延迟感知选择配置 (当 strategy 为 latency_aware 时生效)
   latency_aware:

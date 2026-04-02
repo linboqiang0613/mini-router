@@ -1,17 +1,9 @@
 """Types for model selection."""
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
-
-class SelectionMethod(str, Enum):
-    """Available selection methods."""
-
-    STATIC = "static"
-    ROUND_ROBIN = "round_robin"
-    WEIGHTED = "weighted"
-    LATENCY_AWARE = "latency_aware"
+from mini_router.config.config import SelectionMethod
 
 
 @dataclass
