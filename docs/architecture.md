@@ -970,3 +970,113 @@ base_url_template: "http://api.example.com/llm/{model}/v1"
 # 如果 model = "qwen3-max"
 # 则 URL = "http://api.example.com/llm/qwen3-max/v1"
 ```
+
+### 9.6 配置协作机制
+
+#### config.yaml 与 tenants.yaml 的协作关系
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        config.yaml (全局配置)                    │
+│                                                                 │
+│  models:          → 所有租户共享的分类器模型配置                │
+│  signals:         → 所有租户共享的关键词规则                    │
+│  decisions:       → 默认路由规则 (租户无配置时使用)             │
+│  selection:       → 模型选择策略                                │
+│  cache:           → 缓存配置                                    │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ Signal 层使用全局配置
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    tenants.yaml (租户配置)                       │
+│                                                                 │
+│  tenant_id:       → 租户标识                                    │
+│  apikey:          → 租户 API Key                                │
+│  base_url_template: → 租户专属的上游 API 地址                   │
+│  decisions:       → 租户专属路由规则 (覆盖全局 decisions)        │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ Decision 层使用租户 decisions
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        请求处理流程                              │
+│                                                                 │
+│  1. Signal 层: 使用全局 signals + models 提取信号               │
+│     → 所有租户共享相同的信号提取逻辑                            │
+│                                                                 │
+│  2. Decision 层: 使用租户 decisions 进行路由决策                │
+│     → 每个租户可以有独立的路由策略                              │
+│                                                                 │
+│  3. Proxy 层: 使用租户 base_url_template + apikey 调用 API      │
+│     → 每个租户连接不同的上游服务                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 为什么 Signal 层共享而 Decision 层独立？
+
+| 层 | 共享/独立 | 原因 |
+|---|----------|------|
+| **Signal** | 共享 | 信号提取逻辑统一，减少维护成本，保证一致性 |
+| **Decision** | 独立 | 不同租户需要不同的路由策略和成本控制 |
+| **Proxy** | 独立 | 不同租户连接不同的上游服务和 API Key |
+
+#### 代码实现
+
+```python
+# Router 初始化时使用全局配置
+class Router:
+    def __init__(self, config: RouterConfig):
+        # Signal 层：使用全局 signals 和 models 配置
+        self.keyword_classifier = KeywordClassifier(config.signals.keyword_rules)
+        self.complexity_classifier = ComplexityClassifier(config.models.classifier.complexity)
+        self.context_length_classifier = ContextLengthClassifier(
+            tokenizer_path=config.models.tokenizer_path,
+            threshold=config.models.classifier.context_length.threshold
+        )
+
+    async def route(self, request, decisions=None):
+        # Signal 层：使用全局配置提取信号
+        signals = await self.classifier.classify(request.query)
+
+        # Decision 层：使用租户 decisions 或全局 decisions
+        effective_decisions = decisions if decisions is not None else self.config.decisions
+        result = self.decision_engine.evaluate(signals, effective_decisions)
+
+        return result
+
+
+# ChatProxy 使用租户配置
+class ChatProxy:
+    async def chat_stream(self, request, tenant):
+        # Signal 层：全局配置 (已在 Router 中初始化)
+        signals = await self.router.classifier.classify(query)
+
+        # Decision 层：使用租户 decisions
+        result = await self.router.route(
+            RoutingRequest(query=query),
+            decisions=tenant.decisions  # 租户专属规则
+        )
+
+        # Proxy 层：使用租户 base_url 和 apikey
+        base_url = build_base_url(tenant.base_url_template, result.selected_model)
+        response = await self.client.chat_completion(
+            base_url=base_url,
+            api_key=tenant.apikey,
+            model=result.selected_model,
+            messages=messages
+        )
+```
+
+#### 租户无 decisions 时的回退机制
+
+```python
+async def route(self, request, decisions=None):
+    # 如果租户提供了 decisions，使用租户的
+    # 否则使用全局 config.decisions
+    effective_decisions = decisions if decisions is not None else self.config.decisions
+
+    # 后续逻辑使用 effective_decisions...
+```
+
+全局 `config.yaml` 中的 `decisions` 作为默认值，租户可以通过配置覆盖。

@@ -1,0 +1,269 @@
+# Mini-Router 完整配置示例
+# 本配置展示了所有可用的配置项
+
+# ============================================================
+# 服务配置
+# ============================================================
+server:
+  host: "0.0.0.0"      # 监听地址
+  port: 8080           # 监听端口
+  max_workers: 10      # 最大工作线程数
+
+# ============================================================
+# 模型配置
+# ============================================================
+models:
+  # 上游 LLM API 地址 (全局默认)
+  base_url: "https://api.openai.com/v1"
+
+  # API Key (全局默认，可被租户配置覆盖)
+  api_key: "${OPENAI_API_KEY}"
+
+  # HuggingFace tokenizer 路径 (用于 ContextLengthClassifier)
+  tokenizer_path: "~/models/Qwen3-tokenizer"
+
+  # 请求超时时间 (秒)
+  timeout: 120.0
+
+  # --------------------------------------------------------
+  # 分类器配置 (用于 Signal 层)
+  # --------------------------------------------------------
+  classifier:
+    # 意图分类器
+    intent:
+      model: "gpt-4o-mini"           # 使用的模型
+      enabled: true                   # 是否启用
+      timeout: 30.0                   # 超时时间
+      fallback_label: null            # 失败时的默认标签 (null 表示不设置)
+
+    # 个人信息检测
+    pii:
+      model: "gpt-4o-mini"
+      enabled: true
+      timeout: 30.0
+      fallback_label: "detected"      # 安全优先：失败时假设检测到 PII
+
+    # 安全威胁检测
+    security:
+      model: "gpt-4o-mini"
+      enabled: true
+      timeout: 30.0
+      fallback_label: "detected"      # 安全优先：失败时假设检测到威胁
+
+    # 复杂度分析
+    complexity:
+      model: "gpt-4o-mini"
+      enabled: true
+      timeout: 30.0
+      fallback_label: "complex"       # 保守策略：失败时假设复杂
+
+    # 上下文长度分类 (本地计算，无需调用 API)
+    context_length:
+      enabled: true
+      threshold: 10000                # token 阈值，超过则标记为 "long"
+      fallback_label: "short"         # 失败时默认值
+
+  # --------------------------------------------------------
+  # 嵌入模型配置 (用于语义缓存)
+  # --------------------------------------------------------
+  embedder:
+    model: "text-embedding-3-small"
+    enabled: false                    # 是否启用语义缓存
+
+# ============================================================
+# 信号规则 (Signal Layer)
+# ============================================================
+signals:
+  # 关键词规则 (本地匹配，无延迟)
+  keyword_rules:
+    - name: "code_related"
+      keywords: ["code", "programming", "function", "debug", "error", "python", "java", "golang", "javascript", "typescript"]
+      operator: "any"                 # 任一关键词匹配即可
+      case_sensitive: false           # 不区分大小写
+
+    - name: "math_related"
+      keywords: ["calculate", "math", "equation", "solve", "compute", "formula", "algebra", "geometry"]
+      operator: "any"
+      case_sensitive: false
+
+    - name: "translation"
+      keywords: ["translate", "翻译", "language", "语言", "english", "chinese"]
+      operator: "any"
+      case_sensitive: false
+
+    - name: "creative_writing"
+      keywords: ["write", "story", "poem", "creative", "article", "blog", "essay"]
+      operator: "any"
+      case_sensitive: false
+
+    - name: "simple_query"
+      keywords: ["what is", "hello", "hi", "thanks", "thank you", "bye"]
+      operator: "any"
+      case_sensitive: false
+
+  # 语义匹配规则 (需要 embedder)
+  embedding_rules: []
+
+  # 分类类别
+  categories: []
+
+# ============================================================
+# 决策规则 (Decision Layer)
+# 按 priority 从高到低评估，首个匹配的决策生效
+# ============================================================
+decisions:
+  # --------------------------------------------------------
+  # 高优先级: 安全拦截
+  # --------------------------------------------------------
+  - name: "block_pii"
+    priority: 100
+    rules:
+      type: "signal"
+      signal: "pii"
+      condition: "detected"
+    model_refs: []
+    action: "reject"
+    reject_message: "PII detected in request. Please remove personal information and try again."
+
+  - name: "block_security_threat"
+    priority: 99
+    rules:
+      type: "signal"
+      signal: "security"
+      condition: "detected"
+    model_refs: []
+    action: "reject"
+    reject_message: "Security threat detected. Request blocked for safety."
+
+  # --------------------------------------------------------
+  # 中高优先级: 上下文长度路由
+  # --------------------------------------------------------
+  - name: "route_long_context"
+    priority: 90
+    rules:
+      type: "signal"
+      signal: "context_length"
+      condition: "long"
+    model_refs:
+      - model: "gpt-4-turbo"
+        weight: 1.0
+        max_tokens: 128000           # 支持 128k context
+      - model: "claude-3-opus"
+        weight: 0.8
+        max_tokens: 200000           # 支持 200k context
+
+  # --------------------------------------------------------
+  # 中优先级: 复杂度路由
+  # --------------------------------------------------------
+  - name: "route_complex_query"
+    priority: 50
+    rules:
+      type: "signal"
+      signal: "complexity"
+      condition: "complex"
+    model_refs:
+      - model: "gpt-4o"
+        weight: 1.0
+      - model: "claude-3-sonnet"
+        weight: 0.8
+
+  # --------------------------------------------------------
+  # 低优先级: 领域专项路由
+  # --------------------------------------------------------
+  - name: "route_to_code_model"
+    priority: 10
+    rules:
+      type: "keyword"
+      name: "code_related"
+    model_refs:
+      - model: "gpt-4o"
+        weight: 1.0
+      - model: "claude-3-sonnet"
+        weight: 0.7
+
+  - name: "route_to_math_model"
+    priority: 5
+    rules:
+      type: "keyword"
+      name: "math_related"
+    model_refs:
+      - model: "gpt-4o"
+        weight: 1.0
+
+  - name: "route_translation"
+    priority: 5
+    rules:
+      type: "keyword"
+      name: "translation"
+    model_refs:
+      - model: "gpt-4o-mini"
+        weight: 1.0
+
+  - name: "route_creative"
+    priority: 3
+    rules:
+      type: "keyword"
+      name: "creative_writing"
+    model_refs:
+      - model: "gpt-4o"
+        weight: 1.0
+      - model: "claude-3-opus"
+        weight: 0.9
+
+  - name: "route_simple_query"
+    priority: 2
+    rules:
+      type: "keyword"
+      name: "simple_query"
+    model_refs:
+      - model: "gpt-4o-mini"
+        weight: 1.0
+
+  # --------------------------------------------------------
+  # 兜底路由: 匹配所有请求
+  # --------------------------------------------------------
+  - name: "default_route"
+    priority: 0
+    rules:
+      type: "or"
+      children:
+        - type: "signal"
+          signal: "complexity"
+          condition: "simple"
+        - type: "signal"
+          signal: "complexity"
+          condition: "complex"
+    model_refs:
+      - model: "gpt-4o-mini"
+        weight: 1.0
+
+# ============================================================
+# 模型选择策略
+# ============================================================
+selection:
+  # 可选策略: static, round_robin, latency_aware
+  strategy: "latency_aware"
+
+  # 延迟感知选择配置 (当 strategy 为 latency_aware 时生效)
+  latency_aware:
+    # 百分位数配置
+    tpot_percentile: 50              # TPOT (Time Per Output Token) p50
+    ttft_percentile: 90              # TTFT (Time To First Token) p90
+    latency_percentile: 50           # 通用延迟 p50
+
+    # 最小观测次数才开始使用延迟数据
+    min_observations: 3
+
+    # 无延迟数据时回退到权重选择
+    fallback_to_weight: true
+
+    # 延迟与权重混合因子 (0=纯延迟, 1=纯权重)
+    weight_blend: 0.3
+
+# ============================================================
+# 缓存配置
+# ============================================================
+cache:
+  enabled: true                      # 是否启用缓存
+  similarity_threshold: 0.95         # 语义缓存相似度阈值
+  max_entries: 10000                 # 最大缓存条目数

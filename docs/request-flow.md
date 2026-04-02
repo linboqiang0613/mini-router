@@ -282,3 +282,120 @@ curl -X POST http://localhost:8080/v1/feedback \
     "ttft": 0.3
   }'
 ```
+
+---
+
+## 完整请求示例
+
+以下是一个完整的请求处理示例，展示了从租户认证到模型调用的全过程。
+
+### 请求
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-dev-team-001-abc123xyz" \
+  -d '{
+    "messages": [{"role": "user", "content": "帮我写一个 Python 函数"}],
+    "stream": true
+  }'
+```
+
+### 处理流程详解
+
+```
+请求: "帮我写一个 Python 函数"
+Authorization: Bearer sk-dev-team-001-abc123xyz
+
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 1: 租户认证                                                 │
+│                                                                 │
+│ 根据 apikey 查找租户:                                            │
+│   tenant_id: "dev-team-001"                                     │
+│   base_url_template: "https://api.openai.com/v1"                │
+│   decisions: [租户专属规则]                                      │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 2: Signal 层 (使用全局 config.yaml)                         │
+│                                                                 │
+│ signals.keyword_rules:                                          │
+│   - name: "code_related"                                        │
+│     keywords: ["code", "python", "debug", ...]                  │
+│   → 匹配结果: code_related = true                               │
+│                                                                 │
+│ models.classifier.complexity:                                   │
+│   model: "gpt-4o-mini"                                          │
+│   → 分类结果: complexity = "simple"                             │
+│                                                                 │
+│ models.classifier.context_length:                               │
+│   tokenizer_path: "~/Qwen3-tokenizer"                           │
+│   threshold: 10000                                              │
+│   → 计算结果: token_count = 50, label = "short"                 │
+│                                                                 │
+│ → SignalMatches {                                               │
+│     keyword_rules: {code_related: true},                        │
+│     complexity: "simple",                                       │
+│     context_length: {label: "short", token_count: 50}           │
+│   }                                                             │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 3: Decision 层 (使用租户 tenant.decisions)                  │
+│                                                                 │
+│ 租户 "dev-team-001" 的 decisions:                               │
+│                                                                 │
+│ priority=100: block_pii                                         │
+│   → pii == "detected"? No, 跳过                                 │
+│                                                                 │
+│ priority=90: route_long_context                                 │
+│   → context_length == "long"? No, 跳过                          │
+│                                                                 │
+│ priority=10: route_code                                         │
+│   → keyword "code_related"? Yes! ✓                              │
+│                                                                 │
+│ → DecisionResult {                                              │
+│     decision: route_code,                                       │
+│     model_refs: [{model: "gpt-4o", weight: 1.0}]                │
+│   }                                                             │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 4: Proxy 层 (使用租户配置)                                  │
+│                                                                 │
+│ base_url = tenant.base_url_template                             │
+│           = "https://api.openai.com/v1"                         │
+│                                                                 │
+│ api_key = tenant.apikey                                         │
+│         = "sk-dev-team-001-abc123xyz"                           │
+│                                                                 │
+│ → 调用 POST https://api.openai.com/v1/chat/completions          │
+│   Headers: Authorization: Bearer sk-dev-team-001-abc123xyz      │
+│   Body: {model: "gpt-4o", messages: [...]}                      │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 5: 流式返回                                                 │
+│                                                                 │
+│ data: {"choices":[{"delta":{"content":"def "}}]}                │
+│ data: {"choices":[{"delta":{"content":"hello"}}]}               │
+│ data: {"choices":[{"delta":{"content":"_world"}}]}              │
+│ data: [DONE]                                                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 响应
+
+```
+data: {"id":"chatcmpl-xxx","model":"gpt-4o","choices":[{"delta":{"content":"def "}}]}
+
+data: {"id":"chatcmpl-xxx","model":"gpt-4o","choices":[{"delta":{"content":"hello"}}]}
+
+data: {"id":"chatcmpl-xxx","model":"gpt-4o","choices":[{"delta":{"content":"_world"}}]}
+
+data: [DONE]
+```
