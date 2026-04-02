@@ -3,7 +3,8 @@
 import random
 from abc import ABC, abstractmethod
 
-from mini_router.algorithm.types import SelectionContext, SelectionMethod, SelectionResult
+from mini_router.algorithm.types import SelectionContext, SelectionResult
+from mini_router.config.config import SelectionMethod
 from mini_router.metrics.latency import LatencyTracker, get_global_tracker
 
 

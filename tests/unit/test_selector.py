@@ -3,8 +3,8 @@
 import pytest
 
 from mini_router.algorithm.selector import Registry, RoundRobinSelector, StaticSelector
-from mini_router.algorithm.types import SelectionContext, SelectionMethod
-from mini_router.config.config import ModelRef
+from mini_router.algorithm.types import SelectionContext
+from mini_router.config.config import ModelRef, SelectionMethod
 
 
 @pytest.fixture
