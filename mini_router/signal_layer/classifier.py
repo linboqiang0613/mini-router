@@ -236,7 +236,8 @@ class ComplexityClassifier(MLClassifierBase):
         "## 重要提示\n\n"
         "- 不要仅根据问题长度判断复杂度\n"
         "- \"帮我重构 Linux 系统\"看似简单实则复杂，需要判定为 complex\n"
-        "- \"今天天气怎么样\"虽长但简单，需判定为 simple\n\n"
+        "- \"今天天气怎么样\"虽长但简单，需判定为 simple\n"
+        "- 涉及金融、银行、证券、保险领域的查询，默认考虑为 complex\n\n"
         "## 输出格式\n\n"
         "仅返回一个词：simple 或 complex，不要有任何其他内容。"
     )
