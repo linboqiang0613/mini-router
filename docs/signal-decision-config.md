@@ -69,7 +69,33 @@ models:
 | `intent` | 意图分类 | 自定义标签 |
 | `pii` | 个人信息检测 | `detected` / `none` |
 | `security` | 安全威胁检测 | `safe` / 威胁类型 |
-| `complexity` | 复杂度分析 | `simple` / `medium` / `complex` |
+| `complexity` | 复杂度分析 | `simple` / `complex` |
+| `context_length` | 上下文长度 | `short` / `long` |
+
+### 3. 上下文长度分类器 (context_length)
+
+**本地计算，使用 HuggingFace tokenizer**
+
+```yaml
+models:
+  tokenizer_path: "~/Qwen3-tokenizer"  # tokenizer 路径
+  
+  classifier:
+    context_length:
+      enabled: true
+      threshold: 10000  # token 阈值，超过则标记为 "long"
+```
+
+| 字段 | 说明 |
+|------|------|
+| `tokenizer_path` | HuggingFace tokenizer 路径（需与上游模型匹配） |
+| `threshold` | token 阈值，默认 10000 |
+| `fallback_label` | 计算失败时的默认值，默认 "short" |
+
+**特点**：
+- 本地计算，无需调用 API
+- 延迟极低（< 10ms）
+- 可用于 `max_tokens` 过滤
 
 ---
 
@@ -123,7 +149,8 @@ rules:
 | `pii` | `detected` |
 | `security` | `detected` |
 | `intent` | 自定义标签 |
-| `complexity` | `simple` / `medium` / `complex` |
+| `complexity` | `simple` / `complex` |
+| `context_length` | `short` / `long` |
 
 #### 3. 复合规则 (AND/OR/NOT)
 
@@ -178,9 +205,15 @@ rules:
 model_refs:
   - model: "qwen3-max"      # 模型名称
     weight: 1.0             # 权重 (用于加权选择)
+    max_tokens: 32768       # 该模型支持的最大 token 数 (可选)
 ```
 
 多个模型时，按权重随机选择。
+
+**max_tokens 过滤**：
+- 如果配置了 `context_length` 分类器
+- 系统会自动过滤 `max_tokens < token_count` 的模型
+- 如果所有模型都被过滤，使用第一个模型作为兜底
 
 ---
 
@@ -372,3 +405,4 @@ decisions:
 |------|------|------|------|
 | `model` | string | ✓ | 模型名称 |
 | `weight` | float | | 权重，默认 1.0 |
+| `max_tokens` | int | | 模型支持的最大 token 数，用于过滤 |

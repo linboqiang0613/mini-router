@@ -57,7 +57,19 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ```
 POST /v1/chat/completions
+Authorization: Bearer sk-tenant-001-key
 {"messages": [{"role": "user", "content": "写一个 Python 函数"}]}
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  租户认证                                                        │
+│                                                                 │
+│  1. 提取 API Key: "sk-tenant-001-key"                          │
+│  2. 查找租户: TenantManager.get_by_apikey()                    │
+│  3. 验证租户状态: enabled = true                                │
+│                                                                 │
+│  → TenantConfig {tenant_id, base_url_template, decisions, ...}  │
+└─────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -68,7 +80,7 @@ POST /v1/chat/completions
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Router.route() - Signal 层                                     │
+│  Router.route() - Signal 层 (使用租户的 decisions)              │
 │                                                                 │
 │  ┌─────────────────────────────────────────┐                   │
 │  │ KeywordClassifier (本地匹配)            │                   │
@@ -79,14 +91,21 @@ POST /v1/chat/completions
 │                                                                 │
 │  ┌─────────────────────────────────────────┐                   │
 │  │ MLClassifier (调用大模型 API)           │                   │
-│  │ - complexity: "medium"                  │                   │
+│  │ - complexity: "complex"                 │                   │
 │  │ - pii: "none"                           │                   │
 │  │ - security: "safe"                      │                   │
 │  └─────────────────────────────────────────┘                   │
 │                                                                 │
+│  ┌─────────────────────────────────────────┐                   │
+│  │ ContextLengthClassifier (本地计算)      │                   │
+│  │ - token_count: 156                     │                   │
+│  │ - label: "short"                       │                   │
+│  └─────────────────────────────────────────┘                   │
+│                                                                 │
 │  → SignalMatches {                                              │
 │       keyword_rules: {code_related: true},                      │
-│       complexity: "medium",                                     │
+│       complexity: "complex",                                    │
+│       context_length: {label: "short", token_count: 156},       │
 │       pii: false,                                               │
 │       security: false                                           │
 │     }                                                           │
@@ -94,7 +113,7 @@ POST /v1/chat/completions
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Decision 层 - Engine.evaluate()                                │
+│  Decision 层 - Engine.evaluate() (使用租户的 decisions)         │
 │                                                                 │
 │  按 priority 从高到低评估:                                       │
 │                                                                 │
@@ -104,15 +123,15 @@ POST /v1/chat/completions
 │  priority=99: block_security_threat                             │
 │    → security == "detected"? No, 跳过                           │
 │                                                                 │
-│  priority=50: route_complex_query                               │
-│    → complexity == "complex"? No, 跳过                          │
+│  priority=90: route_long_context                                │
+│    → context_length == "long"? No, 跳过                         │
 │                                                                 │
-│  priority=10: route_to_code_model                              │
-│    → keyword "code_related"? Yes! ✓                             │
+│  priority=50: route_complex_query                               │
+│    → complexity == "complex"? Yes! ✓                            │
 │                                                                 │
 │  → DecisionResult {                                             │
-│       decision: route_to_code_model,                            │
-│       model_refs: [codellama-70b, deepseek-coder]               │
+│       decision: route_complex_query,                            │
+│       model_refs: [qwen3-max]                                   │
 │     }                                                           │
 └─────────────────────────────────────────────────────────────────┘
         │
@@ -120,23 +139,29 @@ POST /v1/chat/completions
 ┌─────────────────────────────────────────────────────────────────┐
 │  Algorithm 层 - Model Selection                                 │
 │                                                                 │
-│  SelectionMethod: LATENCY_AWARE (配置决定)                      │
+│  1. max_tokens 过滤:                                            │
+│     - token_count = 156                                         │
+│     - qwen3-max.max_tokens = 32768 >= 156 ✓                    │
 │                                                                 │
-│  LatencyAwareSelector.select():                                 │
-│    - codellama-70b: latency p50 = 1.2s                         │
-│    - deepseek-coder: latency p50 = 0.8s                        │
+│  2. 选择策略:                                                    │
+│     SelectionMethod: LATENCY_AWARE (配置决定)                   │
 │                                                                 │
-│  → 选择 deepseek-coder (延迟更低)                               │
+│  → 选择 qwen3-max                                               │
 └─────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  OpenAIClient.chat_completion_stream()                          │
 │                                                                 │
-│  转发请求到 deepseek-coder:                                      │
+│  使用租户配置构建请求:                                           │
+│    base_url = build_base_url(tenant.base_url_template, model)   │
+│    api_key = tenant.apikey                                      │
+│                                                                 │
+│  转发请求到上游 API:                                             │
 │    POST {base_url}/chat/completions                             │
+│    Headers: Authorization: Bearer {tenant.apikey}               │
 │    {                                                            │
-│      "model": "deepseek-coder",                                 │
+│      "model": "qwen3-max",                                      │
 │      "messages": [...],                                         │
 │      "stream": true                                             │
 │    }                                                            │
@@ -209,11 +234,16 @@ selection:
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/v1/route` | POST | 路由决策，返回选中的模型 |
-| `/v1/chat/completions` | POST | OpenAI 兼容的聊天接口，支持流式 |
+| `/v1/chat/completions` | POST | OpenAI 兼容的聊天接口（需租户认证），支持流式 |
 | `/v1/feedback` | POST | 上报延迟反馈 |
 | `/v1/latency` | GET | 获取所有模型延迟统计 |
 | `/v1/latency/{model}` | GET | 获取单个模型延迟统计 |
 | `/v1/config` | GET | 获取当前配置 |
+| `/v1/tenants` | GET | 列出所有租户 |
+| `/v1/tenants` | POST | 创建租户 |
+| `/v1/tenants/{tenant_id}` | GET | 获取租户详情 |
+| `/v1/tenants/{tenant_id}` | PUT | 更新租户 |
+| `/v1/tenants/{tenant_id}` | DELETE | 删除租户 |
 | `/healthz` | GET | 健康检查 |
 | `/readyz` | GET | 就绪检查 |
 

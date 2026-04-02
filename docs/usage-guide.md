@@ -177,6 +177,7 @@ models:
   # 连接本地 vLLM/Ollama/LM Studio 服务
   base_url: "http://localhost:8000/v1"
   api_key: ""
+  tokenizer_path: "~/Qwen3-tokenizer"  # HuggingFace tokenizer 路径
   timeout: 120.0
 
   classifier:
@@ -194,6 +195,9 @@ models:
     security:
       model: "llama-3-8b"
       enabled: false
+    context_length:         # 上下文长度分类器
+      enabled: true
+      threshold: 10000      # token 阈值
 
   embedder:
     model: "text-embedding"
@@ -410,24 +414,115 @@ curl -X POST http://localhost:8080/v1/feedback \
 
 ---
 
-## 五、API 端点列表
+## 五、多租户支持
+
+Mini-Router 支持多租户隔离，每个租户可以配置独立的 API Key、路由规则和上游 API 地址。
+
+### 5.1 租户认证
+
+调用 `/v1/chat/completions` 需要在请求头中提供租户 API Key：
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-tenant-001-key" \
+  -d '{
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": true
+  }'
+```
+
+**认证错误响应：**
+
+| 状态码 | 说明 |
+|--------|------|
+| 401 | API Key 无效或缺失 |
+| 403 | 租户已禁用 |
+
+### 5.2 租户管理 API
+
+#### 创建租户
+
+```bash
+curl -X POST http://localhost:8080/v1/tenants \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "tenant-001",
+    "apikey": "sk-tenant-001-key",
+    "name": "租户 A",
+    "base_url_template": "http://api-a.com/llm/{model}/v1",
+    "decisions": []
+  }'
+```
+
+#### 列出所有租户
+
+```bash
+curl http://localhost:8080/v1/tenants
+```
+
+#### 获取租户详情
+
+```bash
+curl http://localhost:8080/v1/tenants/tenant-001
+```
+
+#### 更新租户
+
+```bash
+curl -X PUT http://localhost:8080/v1/tenants/tenant-001 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "更新后的租户名称",
+    "timeout": 60.0
+  }'
+```
+
+#### 删除租户
+
+```bash
+curl -X DELETE http://localhost:8080/v1/tenants/tenant-001
+```
+
+### 5.3 租户配置结构
+
+每个租户可以配置：
+
+| 字段 | 说明 |
+|------|------|
+| `tenant_id` | 租户唯一标识 |
+| `apikey` | 租户 API Key（用于认证） |
+| `name` | 租户名称 |
+| `enabled` | 是否启用 |
+| `base_url_template` | 上游 API URL 模板（支持 `{model}` 占位符） |
+| `timeout` | 请求超时时间 |
+| `decisions` | 租户专属路由规则 |
+
+---
+
+## 六、API 端点列表
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/healthz` | GET | 健康检查 |
 | `/readyz` | GET | 就绪检查 |
 | `/v1/route` | POST | 路由决策（不调用模型） |
-| `/v1/chat/completions` | POST | OpenAI-compatible Chat（流式/非流式） |
+| `/v1/chat/completions` | POST | OpenAI-compatible Chat（需租户认证） |
 | `/v1/feedback` | POST | 上报延迟反馈 |
 | `/v1/latency` | GET | 获取所有模型延迟统计 |
 | `/v1/latency/{model}` | GET | 获取特定模型延迟统计 |
 | `/v1/config` | GET | 获取当前配置 |
 | `/v1/cache` | POST | 设置缓存条目 |
 | `/v1/cache` | DELETE | 清空缓存 |
+| `/v1/tenants` | GET | 列出所有租户 |
+| `/v1/tenants` | POST | 创建租户 |
+| `/v1/tenants/{tenant_id}` | GET | 获取租户详情 |
+| `/v1/tenants/{tenant_id}` | PUT | 更新租户 |
+| `/v1/tenants/{tenant_id}` | DELETE | 删除租户 |
 
 ---
 
-## 六、常见问题
+## 七、常见问题
 
 ### Q1: 本地模型名称如何确定？
 
@@ -469,7 +564,7 @@ selection:
 
 ---
 
-## 七、开发调试
+## 八、开发调试
 
 ### 7.1 运行单元测试
 
