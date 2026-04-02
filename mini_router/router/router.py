@@ -10,16 +10,15 @@ from mini_router.algorithm.types import SelectionContext
 from mini_router.client import OpenAIClient
 from mini_router.config.config import Decision, DecisionAction, RouterConfig
 from mini_router.decision.engine import Engine
-from mini_router.decision.types import DecisionResult
 from mini_router.metrics.latency import LatencyTracker
-from mini_router.plugin.cache import Cache, CacheEntry, MemoryCache, SemanticCache
+from mini_router.plugin.cache import CacheEntry, MemoryCache, SemanticCache
 from mini_router.signal_layer.classifier import (
-    KeywordClassifier,
-    UnifiedClassifier,
+    ComplexityClassifier,
     IntentClassifier,
+    KeywordClassifier,
     PIIClassifier,
     SecurityClassifier,
-    ComplexityClassifier,
+    UnifiedClassifier,
 )
 from mini_router.signal_layer.embedder import Embedder, MockEmbedder, OpenAIEmbedder
 from mini_router.signal_layer.types import SignalMatches, TaskType

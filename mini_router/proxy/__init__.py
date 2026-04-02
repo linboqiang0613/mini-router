@@ -2,9 +2,9 @@
 
 from mini_router.proxy.chat_proxy import ChatProxy
 from mini_router.proxy.types import (
-    ChatChunk,
     ChatChoice,
     ChatChoiceDelta,
+    ChatChunk,
     ChatMessage,
     ChatProxyResult,
     ChatRequest,

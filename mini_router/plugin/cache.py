@@ -128,6 +128,7 @@ class SemanticCache:
     async def get_similar(self, query: str) -> CacheEntry | None:
         """Find a semantically similar cached entry."""
         import numpy as np
+
         from mini_router.signal_layer.embedder import cosine_similarity
 
         # Get embedding for query

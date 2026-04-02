@@ -1,7 +1,6 @@
 """HTTP API server for mini-router."""
 
 import argparse
-import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,7 +8,7 @@ from typing import Any
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 

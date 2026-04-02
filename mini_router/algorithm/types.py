@@ -3,8 +3,6 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from mini_router.config.config import SelectionMethod
-
 
 @dataclass
 class SelectionContext:

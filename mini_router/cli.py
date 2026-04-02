@@ -5,7 +5,15 @@ import json
 
 import structlog
 
-from mini_router.config.config import Decision, KeywordRule, ModelRef, Operator, RouterConfig, RuleNode, RuleType
+from mini_router.config.config import (
+    Decision,
+    KeywordRule,
+    ModelRef,
+    Operator,
+    RouterConfig,
+    RuleNode,
+    RuleType,
+)
 from mini_router.router.router import Router, RoutingRequest
 
 logger = structlog.get_logger()

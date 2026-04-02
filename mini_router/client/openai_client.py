@@ -216,7 +216,7 @@ class OpenAIClient:
                 status_code=e.response.status_code,
             )
             raise
-        except httpx.TimeoutException as e:
+        except httpx.TimeoutException:
             logger.error(
                 "stream_timeout_error",
                 url=url,
