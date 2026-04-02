@@ -1,6 +1,7 @@
 """Pytest configuration and fixtures."""
 
 import pytest
+from unittest.mock import MagicMock
 
 from mini_router.config.config import (
     ClassifierConfig,
@@ -14,6 +15,14 @@ from mini_router.config.config import (
     RuleType,
     SignalsConfig,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_httpx_async_client():
+    """Mock httpx.AsyncClient to avoid proxy issues in tests."""
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr("httpx.AsyncClient", MagicMock)
+        yield
 
 
 @pytest.fixture

@@ -11,19 +11,29 @@ logger = structlog.get_logger()
 
 
 class OpenAIClient:
-    """Client for OpenAI-compatible API."""
+    """Client for OpenAI-compatible API with dynamic base_url and api_key."""
 
-    def __init__(self, base_url: str, api_key: str = "", timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 60.0,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
         """Initialize the OpenAI client.
 
         Args:
-            base_url: Base URL for the API (e.g., "https://api.openai.com/v1")
-            api_key: API key for authentication
             timeout: Request timeout in seconds
+            base_url: (Deprecated) Base URL for the API - use per-request parameter instead
+            api_key: (Deprecated) API key for authentication - use per-request parameter instead
+
+        Note:
+            base_url and api_key are deprecated and will be removed in a future version.
+            Pass them dynamically to chat_completion and chat_completion_stream methods.
         """
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
         self.timeout = timeout
+        # Store deprecated parameters for backward compatibility
+        self._deprecated_base_url = base_url
+        self._deprecated_api_key = api_key
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0,
@@ -37,6 +47,8 @@ class OpenAIClient:
         self,
         model: str,
         messages: list[dict[str, str]],
+        base_url: str | None = None,
+        api_key: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Call chat completion API (non-streaming).
@@ -44,14 +56,31 @@ class OpenAIClient:
         Args:
             model: Model name
             messages: List of chat messages
+            base_url: Base URL for the API (e.g., "http://api.com/v1").
+                      If not provided, uses deprecated constructor value.
+            api_key: API key for authentication.
+                     If not provided, uses deprecated constructor value.
             **kwargs: Additional parameters (temperature, max_tokens, etc.)
 
         Returns:
             API response as dictionary
+
+        Raises:
+            ValueError: If base_url is not provided (neither in call nor constructor)
         """
+        # Use provided values or fall back to deprecated constructor values
+        effective_base_url = base_url or self._deprecated_base_url
+        effective_api_key = api_key or self._deprecated_api_key
+
+        if not effective_base_url:
+            raise ValueError(
+                "base_url is required. Pass it to chat_completion() or provide "
+                "it in the constructor (deprecated)."
+            )
+
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if effective_api_key:
+            headers["Authorization"] = f"Bearer {effective_api_key}"
 
         payload = {
             "model": model,
@@ -59,7 +88,7 @@ class OpenAIClient:
             **kwargs,
         }
 
-        url = f"{self.base_url}/chat/completions"
+        url = f"{effective_base_url.rstrip('/')}/chat/completions"
         logger.info("api_call_start", url=url, model=model, timeout=self.timeout)
 
         try:
@@ -104,6 +133,8 @@ class OpenAIClient:
         self,
         model: str,
         messages: list[dict[str, str]],
+        base_url: str | None = None,
+        api_key: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream chat completion with SSE.
@@ -111,14 +142,31 @@ class OpenAIClient:
         Args:
             model: Model name
             messages: List of chat messages
+            base_url: Base URL for the API.
+                      If not provided, uses deprecated constructor value.
+            api_key: API key for authentication.
+                     If not provided, uses deprecated constructor value.
             **kwargs: Additional parameters (temperature, max_tokens, etc.)
 
         Yields:
             Parsed JSON chunks from the streaming response.
+
+        Raises:
+            ValueError: If base_url is not provided (neither in call nor constructor)
         """
+        # Use provided values or fall back to deprecated constructor values
+        effective_base_url = base_url or self._deprecated_base_url
+        effective_api_key = api_key or self._deprecated_api_key
+
+        if not effective_base_url:
+            raise ValueError(
+                "base_url is required. Pass it to chat_completion_stream() or provide "
+                "it in the constructor (deprecated)."
+            )
+
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if effective_api_key:
+            headers["Authorization"] = f"Bearer {effective_api_key}"
 
         payload = {
             "model": model,
@@ -127,7 +175,7 @@ class OpenAIClient:
             **kwargs,
         }
 
-        url = f"{self.base_url}/chat/completions"
+        url = f"{effective_base_url.rstrip('/')}/chat/completions"
         logger.info("stream_api_call_start", url=url, model=model)
 
         try:

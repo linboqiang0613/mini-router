@@ -151,3 +151,121 @@ class TestChatProxy:
         query = proxy._extract_query(messages)
         assert "You are helpful" in query
         assert "Hi there" in query
+
+
+class TestDynamicClient:
+    """Tests for OpenAIClient with dynamic base_url and api_key."""
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_with_dynamic_params(self) -> None:
+        """Test chat_completion accepts dynamic base_url and api_key."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://dynamic-api.com/v1",
+                api_key="dynamic-key",
+            )
+
+            # Verify the call was made with correct URL
+            call_args = mock_httpx_client.post.call_args
+            assert call_args[0][0] == "http://dynamic-api.com/v1/chat/completions"
+            assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_without_api_key(self) -> None:
+        """Test chat_completion works without api_key."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://api.com/v1",
+                api_key="",  # Empty api_key
+            )
+
+            # Verify no Authorization header when api_key is empty
+            call_args = mock_httpx_client.post.call_args
+            assert "Authorization" not in call_args[1]["headers"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_stream_with_dynamic_params(self) -> None:
+        """Test chat_completion_stream accepts dynamic base_url and api_key."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+
+        # Mock the stream response
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        # Simulate SSE lines
+        async def mock_aiter_lines():
+            yield "data: {\"choices\": [{\"delta\": {\"content\": \"Hello\"}}]}"
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+
+        # Mock the stream method to return an async context manager
+        mock_stream_context = MagicMock()
+        mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_context.__aexit__ = AsyncMock(return_value=None)
+        mock_httpx_client.stream = MagicMock(return_value=mock_stream_context)
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+
+            chunks = []
+            async for chunk in client.chat_completion_stream(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://dynamic-api.com/v1",
+                api_key="dynamic-key",
+            ):
+                chunks.append(chunk)
+
+            # Verify we got chunks
+            assert len(chunks) == 1
+            assert chunks[0]["choices"][0]["delta"]["content"] == "Hello"
+
+            # Verify the call was made with correct URL
+            call_args = mock_httpx_client.stream.call_args
+            # stream is called with ("POST", url, headers=headers, json=payload)
+            assert call_args[0][1] == "http://dynamic-api.com/v1/chat/completions"
+            assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
