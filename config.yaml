@@ -9,7 +9,8 @@ server:
 # 模型配置
 models:
   base_url: "https://coding.dashscope.aliyuncs.com/v1"  # 大模型 API 地址
-  api_key: "sk-sp-87502e407ca9427c97c6ee9fdedaabdb"      # API Key (本地部署可留空)
+  api_key: "None"      # API Key (本地部署可留空)
+  tokenizer_path: "~/Qwen3-tokenizer"
   timeout: 120.0                                          # 请求超时时间(秒)
 
   # 分类器配置
@@ -17,23 +18,29 @@ models:
     intent:
       model: "qwen3.5-plus"
       enabled: true
-      timeout: 5.0
+      timeout: 50.0
       fallback_label: null
     pii:
       model: "qwen3.5-plus"
       enabled: true
-      timeout: 10.0
+      timeout: 50.0
       fallback_label: "detected"
     security:
       model: "qwen3.5-plus"
       enabled: true
-      timeout: 10.0
+      timeout: 50.0
       fallback_label: "detected"
     complexity:
       model: "qwen3.5-plus"
       enabled: true
-      timeout: 8.0
+      timeout: 50.0
       fallback_label: "medium"
+    context_length:                            # NEW: 上下文长度分类器
+      model: "context-length-classifier"       # 模型名（本地计算，不需要实际 API）
+      enabled: true
+      timeout: 5.0
+      fallback_label: "short"
+      threshold: 10  # 测试用，上下文长度的阈值
 
   # 嵌入模型配置 (用于语义缓存)
   embedder:
@@ -85,6 +92,18 @@ decisions:
     action: "reject"
     reject_message: "Security threat detected. Request blocked."
 
+  # 上下文长度超过阈值会路由到这个模型
+  - name: "route_long_context"
+    priority: 90
+    rules:
+      type: "signal"
+      signal: "context_length"
+      condition: "long"
+    model_refs:
+      - model: "qwen3-max-2026-01-23"
+        weight: 1.0
+        max_tokens: 32768
+
   # 复杂度路由: 高复杂度使用强模型
   - name: "route_complex_query"
     priority: 50
@@ -93,7 +112,7 @@ decisions:
       signal: "complexity"
       condition: "complex"
     model_refs:
-      - model: "qwen3-max"
+      - model: "kimi-k2.5"
         weight: 1.0
 
   # 中优先级: 专项路由
@@ -103,9 +122,9 @@ decisions:
       type: "keyword"
       name: "code_related"
     model_refs:
-      - model: "codellama-70b"
+      - model: "qwen3-coder-next"
         weight: 1.0
-      - model: "deepseek-coder"
+      - model: "qwen3-coder-plus"
         weight: 0.8
 
   - name: "route_to_math_model"
@@ -114,7 +133,7 @@ decisions:
       type: "keyword"
       name: "math_related"
     model_refs:
-      - model: "llama-3-math"
+      - model: "glm-4.7"
         weight: 1.0
 
   - name: "route_translation"
@@ -123,7 +142,7 @@ decisions:
       type: "keyword"
       name: "translation"
     model_refs:
-      - model: "qwen-translate"
+      - model: "glm-5"
         weight: 1.0
 
   # 低优先级: 兜底路由 (匹配所有请求)
