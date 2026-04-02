@@ -4,8 +4,12 @@ import math
 import random
 from abc import ABC, abstractmethod
 
+import structlog  # NEW
+
 from mini_router.algorithm.types import SelectionContext, SelectionMethod, SelectionResult
 from mini_router.metrics.latency import LatencyTracker, get_global_tracker
+
+logger = structlog.get_logger()  # NEW
 
 
 class ModelSelector(ABC):
@@ -225,6 +229,43 @@ class LatencyAwareSelector(ModelSelector):
         )
 
 
+def _filter_by_max_tokens(
+    candidates: list["ModelRef"],
+    signals: "SignalMatches | None"
+) -> list["ModelRef"]:
+    """Filter candidates by max_tokens constraint.
+
+    Args:
+        candidates: List of candidate ModelRef
+        signals: SignalMatches containing context_length with token_count in metadata
+
+    Returns:
+        Filtered list of candidates. If all filtered, returns first candidate as fallback.
+    """
+    if not signals or not signals.context_length:
+        return candidates
+
+    token_count = signals.context_length.metadata.get("token_count")
+    if token_count is None:
+        return candidates
+
+    filtered = [
+        m for m in candidates
+        if m.max_tokens is None or m.max_tokens >= token_count
+    ]
+
+    if not filtered:
+        logger.warning(
+            "all_models_exceed_max_tokens",
+            token_count=token_count,
+            candidates=[m.model for m in candidates],
+            fallback="using_first_candidate",
+        )
+        return [candidates[0]]
+
+    return filtered
+
+
 class Registry:
     """Registry for model selectors."""
 
@@ -251,8 +292,36 @@ class Registry:
     async def select(
         self, method: SelectionMethod, context: SelectionContext
     ) -> SelectionResult:
-        """Select a model using the specified method."""
+        """Select a model using the specified method.
+
+        Applies max_tokens filtering before selection if signals are provided.
+        """
+        # Filter candidates by max_tokens before selection
+        filtered_candidates = _filter_by_max_tokens(
+            context.candidate_models,
+            context.signals
+        )
+
+        # Create context with filtered candidates
+        filtered_context = SelectionContext(
+            query=context.query,
+            candidate_models=filtered_candidates,
+            user_id=context.user_id,
+            metadata=context.metadata,
+            signals=context.signals,
+            latency_percentile=context.latency_percentile,
+            tpot_percentile=context.tpot_percentile,
+            ttft_percentile=context.ttft_percentile,
+            min_observations=context.min_observations,
+            fallback_to_weight=context.fallback_to_weight,
+            weight_blend=context.weight_blend,
+        )
+
         selector = self._selectors.get(method)
         if not selector:
             raise ValueError(f"Unknown selection method: {method}")
-        return await selector.select(context)
+        return await selector.select(filtered_context)
+
+
+# Import here to avoid circular dependency
+from mini_router.config.config import ModelRef  # noqa: E402
