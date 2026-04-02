@@ -10,15 +10,27 @@ from mini_router.proxy.types import (
     ChatChoiceDelta,
     ChatChunk,
     ChatMessage,
-    ChatProxyResult,
     ChatRequest,
     ChatResponse,
     ChatUsage,
 )
 from mini_router.router.router import Router, RoutingRequest
 from mini_router.signal_layer.classifier import OpenAIClient
+from mini_router.tenant.types import TenantConfig, build_base_url
 
 logger = structlog.get_logger()
+
+
+class AuthenticationError(Exception):
+    """Raised when API key is missing or invalid."""
+
+    pass
+
+
+class TenantDisabledError(Exception):
+    """Raised when tenant is disabled."""
+
+    pass
 
 
 class ChatProxy:
@@ -34,11 +46,68 @@ class ChatProxy:
         self.router = router
         self.client = client
 
+    @staticmethod
+    def extract_apikey(authorization: str | None) -> str | None:
+        """Extract API key from Authorization header.
+
+        Args:
+            authorization: The Authorization header value (e.g., "Bearer apikey")
+
+        Returns:
+            The extracted API key, or None if not found/invalid format.
+        """
+        if not authorization:
+            return None
+
+        # Check for Bearer token format
+        if not authorization.startswith("Bearer "):
+            return None
+
+        # Extract the token after "Bearer "
+        apikey = authorization[7:].strip()
+        if not apikey:
+            return None
+
+        return apikey
+
+    @staticmethod
+    def authenticate_tenant(
+        tenant_manager: Any,
+        apikey: str,
+    ) -> TenantConfig:
+        """Authenticate a tenant by API key.
+
+        Args:
+            tenant_manager: The TenantManager instance for lookup
+            apikey: The API key to authenticate
+
+        Returns:
+            The authenticated TenantConfig
+
+        Raises:
+            AuthenticationError: If API key is invalid or tenant not found
+            TenantDisabledError: If tenant is disabled
+        """
+        tenant = tenant_manager.get_by_apikey(apikey)
+
+        if tenant is None:
+            raise AuthenticationError("Invalid API key: tenant not found")
+
+        if not tenant.enabled:
+            raise TenantDisabledError(f"Tenant '{tenant.tenant_id}' is disabled")
+
+        return tenant
+
     async def chat_stream(
         self,
         request: ChatRequest,
+        tenant: TenantConfig | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Process a streaming chat request.
+
+        Args:
+            request: The chat request to process
+            tenant: Optional tenant configuration for tenant-specific routing
 
         Yields ChatChunk objects for SSE streaming.
 
@@ -58,18 +127,19 @@ class ChatProxy:
         if request.model:
             selected_model = request.model
             decision_name = None
-            confidence = 1.0
         else:
+            # Use tenant decisions if provided
+            decisions = tenant.decisions if tenant else None
             routing_result = await self.router.route(
                 RoutingRequest(
                     query=query,
                     user_id=request.user,
                     metadata=request.metadata or {},
-                )
+                ),
+                decisions=decisions,
             )
             selected_model = routing_result.selected_model
             decision_name = routing_result.decision_name
-            confidence = routing_result.confidence
 
             if not selected_model:
                 # Return error chunk
@@ -112,9 +182,18 @@ class ChatProxy:
             # Stream from selected model
             messages = [msg.model_dump() for msg in request.messages]
 
+            # Build base_url from tenant template or use default
+            base_url = None
+            api_key = None
+            if tenant:
+                base_url = build_base_url(tenant.base_url_template, selected_model)
+                api_key = tenant.apikey
+
             async for chunk in self.client.chat_completion_stream(
                 model=selected_model,
                 messages=messages,
+                base_url=base_url,
+                api_key=api_key,
                 **kwargs,
             ):
                 # Record first token time
@@ -171,6 +250,7 @@ class ChatProxy:
                 "chat_proxy_stream_completed",
                 model=selected_model,
                 decision=decision_name,
+                tenant_id=tenant.tenant_id if tenant else None,
                 latency=total_latency,
                 ttft=ttft,
                 tpot=tpot,
@@ -181,6 +261,7 @@ class ChatProxy:
             logger.error(
                 "chat_proxy_stream_error",
                 model=selected_model,
+                tenant_id=tenant.tenant_id if tenant else None,
                 error=str(e),
                 error_type=type(e).__name__,
             )
@@ -198,8 +279,16 @@ class ChatProxy:
                 ],
             )
 
-    async def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(
+        self,
+        request: ChatRequest,
+        tenant: TenantConfig | None = None,
+    ) -> ChatResponse:
         """Process a non-streaming chat request.
+
+        Args:
+            request: The chat request to process
+            tenant: Optional tenant configuration for tenant-specific routing
 
         Returns a complete ChatResponse.
         """
@@ -212,18 +301,19 @@ class ChatProxy:
         if request.model:
             selected_model = request.model
             decision_name = None
-            confidence = 1.0
         else:
+            # Use tenant decisions if provided
+            decisions = tenant.decisions if tenant else None
             routing_result = await self.router.route(
                 RoutingRequest(
                     query=query,
                     user_id=request.user,
                     metadata=request.metadata or {},
-                )
+                ),
+                decisions=decisions,
             )
             selected_model = routing_result.selected_model
             decision_name = routing_result.decision_name
-            confidence = routing_result.confidence
 
             if not selected_model:
                 return ChatResponse(
@@ -261,9 +351,18 @@ class ChatProxy:
             # Call API (non-streaming)
             messages = [msg.model_dump() for msg in request.messages]
 
+            # Build base_url from tenant template or use default
+            base_url = None
+            api_key = None
+            if tenant:
+                base_url = build_base_url(tenant.base_url_template, selected_model)
+                api_key = tenant.apikey
+
             response = await self.client.chat_completion(
                 model=selected_model,
                 messages=messages,
+                base_url=base_url,
+                api_key=api_key,
                 **kwargs,
             )
 
@@ -305,6 +404,7 @@ class ChatProxy:
                 "chat_proxy_completed",
                 model=selected_model,
                 decision=decision_name,
+                tenant_id=tenant.tenant_id if tenant else None,
                 latency=total_latency,
                 tokens=usage.completion_tokens if usage else None,
             )
@@ -320,6 +420,7 @@ class ChatProxy:
             logger.error(
                 "chat_proxy_error",
                 model=selected_model,
+                tenant_id=tenant.tenant_id if tenant else None,
                 error=str(e),
                 error_type=type(e).__name__,
             )

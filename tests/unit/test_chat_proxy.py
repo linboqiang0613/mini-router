@@ -362,3 +362,216 @@ class TestDynamicClient:
                     model="gpt-4",
                     messages=[{"role": "user", "content": "Hello"}],
                 )
+
+
+class TestTenantAuthentication:
+    """Tests for tenant authentication in ChatProxy."""
+
+    def test_extract_apikey_valid(self) -> None:
+        """Test extract_apikey with valid Bearer token."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("Bearer sk-test-123")
+        assert apikey == "sk-test-123"
+
+    def test_extract_apikey_with_extra_spaces(self) -> None:
+        """Test extract_apikey handles extra spaces."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("Bearer   sk-test-123  ")
+        assert apikey == "sk-test-123"
+
+    def test_extract_apikey_none_header(self) -> None:
+        """Test extract_apikey with None header."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey(None)
+        assert apikey is None
+
+    def test_extract_apikey_empty_header(self) -> None:
+        """Test extract_apikey with empty header."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("")
+        assert apikey is None
+
+    def test_extract_apikey_no_bearer_prefix(self) -> None:
+        """Test extract_apikey without Bearer prefix."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("sk-test-123")
+        assert apikey is None
+
+    def test_extract_apikey_bearer_only(self) -> None:
+        """Test extract_apikey with Bearer prefix only."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("Bearer ")
+        assert apikey is None
+
+    def test_authenticate_tenant_success(self) -> None:
+        """Test authenticate_tenant with valid tenant."""
+        from unittest.mock import MagicMock
+        from mini_router.proxy.chat_proxy import ChatProxy, AuthenticationError, TenantDisabledError
+        from mini_router.tenant.types import TenantConfig
+
+        # Create mock tenant manager
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="sk-test-123",
+            name="Test Tenant",
+            enabled=True,
+            base_url_template="http://api.com/llm/{model}/v1",
+        )
+
+        mock_manager = MagicMock()
+        mock_manager.get_by_apikey.return_value = tenant
+
+        # Authenticate
+        result = ChatProxy.authenticate_tenant(mock_manager, "sk-test-123")
+        assert result.tenant_id == "tenant-1"
+        assert result.enabled is True
+
+    def test_authenticate_tenant_not_found(self) -> None:
+        """Test authenticate_tenant with invalid apikey."""
+        from unittest.mock import MagicMock
+        from mini_router.proxy.chat_proxy import ChatProxy, AuthenticationError
+
+        mock_manager = MagicMock()
+        mock_manager.get_by_apikey.return_value = None
+
+        # Should raise AuthenticationError
+        with pytest.raises(AuthenticationError, match="Invalid API key"):
+            ChatProxy.authenticate_tenant(mock_manager, "sk-invalid")
+
+    def test_authenticate_tenant_disabled(self) -> None:
+        """Test authenticate_tenant with disabled tenant."""
+        from unittest.mock import MagicMock
+        from mini_router.proxy.chat_proxy import ChatProxy, TenantDisabledError
+        from mini_router.tenant.types import TenantConfig
+
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="sk-test-123",
+            name="Test Tenant",
+            enabled=False,
+            base_url_template="http://api.com/llm/{model}/v1",
+        )
+
+        mock_manager = MagicMock()
+        mock_manager.get_by_apikey.return_value = tenant
+
+        # Should raise TenantDisabledError
+        with pytest.raises(TenantDisabledError, match="disabled"):
+            ChatProxy.authenticate_tenant(mock_manager, "sk-test-123")
+
+    @pytest.mark.asyncio
+    async def test_chat_with_tenant(self) -> None:
+        """Test chat method uses tenant decisions and base_url."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatRequest, ChatMessage
+        from mini_router.tenant.types import TenantConfig
+        from mini_router.config.config import Decision, RuleNode, RuleType, ModelRef
+
+        # Create mock router
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock()
+        mock_router.route.return_value = MagicMock(
+            selected_model="gpt-4",
+            decision_name="tenant-decision",
+            confidence=0.9,
+        )
+        mock_router.record_latency = AsyncMock()
+
+        # Create mock client
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock()
+        mock_client.chat_completion.return_value = {
+            "id": "test-123",
+            "choices": [
+                {"message": {"role": "assistant", "content": "Hello"}}
+            ],
+        }
+
+        # Create tenant with decisions
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="tenant-apikey",
+            name="Test Tenant",
+            enabled=True,
+            base_url_template="http://tenant-api.com/llm/{model}/v1",
+            decisions=[
+                Decision(
+                    name="tenant-rule",
+                    priority=1,
+                    rules=RuleNode(type=RuleType.KEYWORD, value="test"),
+                    model_refs=[ModelRef(model="gpt-4", weight=1.0)],
+                )
+            ],
+        )
+
+        # Create proxy and call chat
+        proxy = ChatProxy(mock_router, mock_client)
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="Hello")],
+        )
+
+        response = await proxy.chat(request, tenant=tenant)
+
+        # Verify router was called with tenant decisions
+        mock_router.route.assert_called_once()
+        call_args = mock_router.route.call_args
+        assert call_args[1]["decisions"] == tenant.decisions
+
+        # Verify client was called with tenant base_url and api_key
+        mock_client.chat_completion.assert_called_once()
+        client_call_args = mock_client.chat_completion.call_args
+        assert client_call_args[1]["base_url"] == "http://tenant-api.com/llm/gpt-4/v1"
+        assert client_call_args[1]["api_key"] == "tenant-apikey"
+
+    @pytest.mark.asyncio
+    async def test_chat_without_tenant(self) -> None:
+        """Test chat method works without tenant (backward compatibility)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatRequest, ChatMessage
+
+        # Create mock router
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock()
+        mock_router.route.return_value = MagicMock(
+            selected_model="gpt-4",
+            decision_name="default-decision",
+            confidence=0.9,
+        )
+        mock_router.record_latency = AsyncMock()
+
+        # Create mock client
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock()
+        mock_client.chat_completion.return_value = {
+            "id": "test-123",
+            "choices": [
+                {"message": {"role": "assistant", "content": "Hello"}}
+            ],
+        }
+
+        # Create proxy and call chat without tenant
+        proxy = ChatProxy(mock_router, mock_client)
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="Hello")],
+        )
+
+        response = await proxy.chat(request)
+
+        # Verify router was called without decisions
+        mock_router.route.assert_called_once()
+        call_args = mock_router.route.call_args
+        assert call_args[1]["decisions"] is None
+
+        # Verify client was called without base_url and api_key
+        mock_client.chat_completion.assert_called_once()
+        client_call_args = mock_client.chat_completion.call_args
+        assert client_call_args[1]["base_url"] is None
+        assert client_call_args[1]["api_key"] is None
