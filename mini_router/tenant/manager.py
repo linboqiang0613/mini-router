@@ -141,10 +141,19 @@ class TenantManager:
 
         Returns:
             Updated TenantConfig if found, None otherwise.
+
+        Raises:
+            ValueError: If unknown field provided or apikey already exists.
         """
         tenant = self._tenants.get(tenant_id)
         if tenant is None:
             return None
+
+        # Validate that all update fields are valid TenantConfig fields
+        valid_fields = set(TenantConfig.model_fields.keys())
+        unknown_fields = set(updates.keys()) - valid_fields
+        if unknown_fields:
+            raise ValueError(f"Unknown fields: {unknown_fields}")
 
         # Handle apikey change - need to update index
         if "apikey" in updates and updates["apikey"] != tenant.apikey:
@@ -157,18 +166,21 @@ class TenantManager:
             # Add new index entry
             self._apikey_index[new_apikey] = tenant_id
 
-        # Apply updates
-        for key, value in updates.items():
-            if hasattr(tenant, key):
-                setattr(tenant, key, value)
+        # Merge updates and validate with Pydantic
+        update_data = tenant.model_dump()
+        update_data.update(updates)
 
-        # Update timestamp
-        tenant.updated_at = datetime.now()
+        # Create new validated TenantConfig
+        updated_tenant = TenantConfig(**update_data)
+        updated_tenant.updated_at = datetime.now()
+
+        # Update storage
+        self._tenants[tenant_id] = updated_tenant
 
         # Persist to file
         self.save()
 
-        return tenant
+        return updated_tenant
 
     def delete(self, tenant_id: str) -> bool:
         """Delete a tenant.
