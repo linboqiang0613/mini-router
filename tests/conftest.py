@@ -47,6 +47,13 @@ def basic_config() -> RouterConfig:
                     timeout=10.0,
                     fallback_label="medium",
                 ),
+                context_length=ClassifierModelConfig(
+                    model="context-length-classifier",
+                    enabled=False,  # Disabled by default for existing tests
+                    timeout=5.0,
+                    fallback_label="short",
+                    threshold=10000,
+                ),
             ),
         },
         signals=SignalsConfig(
