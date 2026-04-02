@@ -69,6 +69,10 @@ class RuleEvaluator:
             # Check if complexity matches condition (simple/medium/complex)
             if condition:
                 return signals.get_complexity_level() == condition.lower()
+        elif signal == "context_length":
+            # Check if context_length matches condition (short/long)
+            if signals.context_length and condition:
+                return signals.context_length.label.lower() == condition.lower()
 
         return False
 
