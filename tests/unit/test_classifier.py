@@ -435,6 +435,79 @@ class TestUnifiedClassifierNewInterface:
         assert unified.name == "unified"
 
 
+class TestContextLengthClassifier:
+    """Tests for ContextLengthClassifier."""
+
+    @pytest.mark.asyncio
+    async def test_context_length_classifier_short(self):
+        """Test ContextLengthClassifier returns 'short' for text below threshold."""
+        try:
+            from mini_router.signal_layer.classifier import ContextLengthClassifier
+
+            # Use a simple tokenizer for testing (GPT-2 is small and commonly available)
+            classifier = ContextLengthClassifier(
+                tokenizer_path="gpt2",
+                threshold=100,
+                fallback_label="short",
+            )
+
+            # Short text should return 'short'
+            short_text = "user: hello world"
+            result = await classifier.classify(short_text)
+
+            assert result.context_length is not None
+            assert result.context_length.label == "short"
+            assert result.context_length.metadata.get("token_count") < 100
+            assert result.context_length.confidence == 1.0
+        except ImportError:
+            pytest.skip("transformers not installed")
+
+    @pytest.mark.asyncio
+    async def test_context_length_classifier_long(self):
+        """Test ContextLengthClassifier returns 'long' for text above threshold."""
+        try:
+            from mini_router.signal_layer.classifier import ContextLengthClassifier
+
+            classifier = ContextLengthClassifier(
+                tokenizer_path="gpt2",
+                threshold=10,  # Low threshold for testing
+                fallback_label="short",
+            )
+
+            # Long text should return 'long'
+            long_text = "user: " + "hello " * 50  # Definitely >10 tokens
+            result = await classifier.classify(long_text)
+
+            assert result.context_length is not None
+            assert result.context_length.label == "long"
+            assert result.context_length.metadata.get("token_count") >= 10
+        except ImportError:
+            pytest.skip("transformers not installed")
+
+    @pytest.mark.asyncio
+    async def test_context_length_classifier_at_threshold(self):
+        """Test ContextLengthClassifier at exact threshold boundary."""
+        try:
+            from mini_router.signal_layer.classifier import ContextLengthClassifier
+
+            classifier = ContextLengthClassifier(
+                tokenizer_path="gpt2",
+                threshold=5,
+                fallback_label="short",
+            )
+
+            # Test that >= threshold is "long"
+            text_at_threshold = "user: hello world test"  # Should be around 5-6 tokens
+            result = await classifier.classify(text_at_threshold)
+
+            # token_count >= threshold should be "long"
+            token_count = result.context_length.metadata.get("token_count")
+            expected_label = "long" if token_count >= 5 else "short"
+            assert result.context_length.label == expected_label
+        except ImportError:
+            pytest.skip("transformers not installed")
+
+
 class TestMLClassifierTimeoutFallback:
     """Tests for ML classifier timeout and fallback behavior."""
 
