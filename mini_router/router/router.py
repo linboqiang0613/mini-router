@@ -110,7 +110,7 @@ class Router:
 
         # Complexity (neutral default)
         if classifier_config.complexity and classifier_config.complexity.enabled:
-            complexity_fallback = classifier_config.complexity.fallback_label or "medium"
+            complexity_fallback = classifier_config.complexity.fallback_label or "complex"
             classifiers.append(ComplexityClassifier(
                 config=classifier_config.complexity,
                 client=self._client,
