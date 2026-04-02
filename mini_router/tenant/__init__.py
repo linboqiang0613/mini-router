@@ -1,6 +1,7 @@
 """Tenant management module."""
 
 from mini_router.tenant.types import (
+    ErrorResponse,
     TenantConfig,
     TenantCreateRequest,
     TenantResponse,
@@ -9,6 +10,7 @@ from mini_router.tenant.types import (
 )
 
 __all__ = [
+    "ErrorResponse",
     "TenantConfig",
     "TenantCreateRequest",
     "TenantResponse",
