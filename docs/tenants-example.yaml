@@ -1,0 +1,246 @@
+# 租户配置文件
+# 路径: config/tenants.yaml
+# 由 TenantManager API 管理，也可手动编辑
+
+# ============================================================
+# 租户列表
+# ============================================================
+tenants:
+
+  # --------------------------------------------------------
+  # 租户 1: 开发团队
+  # --------------------------------------------------------
+  - tenant_id: "dev-team-001"                      # 租户唯一标识
+    apikey: "sk-dev-team-001-abc123xyz"            # 租户 API Key (用于认证)
+    name: "开发团队 A"                              # 租户名称
+    enabled: true                                  # 是否启用
+
+    # 上游 API URL 模板，{model} 会被替换为实际模型名
+    base_url_template: "https://api.openai.com/v1"
+    timeout: 120.0                                 # 请求超时时间
+
+    # 租户专属路由规则 (覆盖全局配置)
+    decisions:
+      # 安全拦截
+      - name: "block_pii"
+        priority: 100
+        rules:
+          type: "signal"
+          signal: "pii"
+          condition: "detected"
+        model_refs: []
+        action: "reject"
+        reject_message: "检测到隐私信息，请处理后重试"
+
+      # 长上下文路由
+      - name: "route_long_context"
+        priority: 90
+        rules:
+          type: "signal"
+          signal: "context_length"
+          condition: "long"
+        model_refs:
+          - model: "gpt-4-turbo"
+            weight: 1.0
+            max_tokens: 128000
+
+      # 复杂问题路由
+      - name: "route_complex"
+        priority: 50
+        rules:
+          type: "signal"
+          signal: "complexity"
+          condition: "complex"
+        model_refs:
+          - model: "gpt-4o"
+            weight: 1.0
+
+      # 代码问题路由
+      - name: "route_code"
+        priority: 10
+        rules:
+          type: "keyword"
+          name: "code_related"
+        model_refs:
+          - model: "gpt-4o"
+            weight: 1.0
+
+      # 默认路由
+      - name: "default_route"
+        priority: 0
+        rules:
+          type: "or"
+          children:
+          - type: "signal"
+            signal: "complexity"
+            condition: "simple"
+          - type: "signal"
+            signal: "complexity"
+            condition: "complex"
+        model_refs:
+          - model: "gpt-4o-mini"
+            weight: 1.0
+
+    # 时间戳 (由系统自动管理)
+    created_at: "2026-04-02T10:00:00"
+    updated_at: "2026-04-02T10:00:00"
+
+  # --------------------------------------------------------
+  # 租户 2: 产品团队
+  # --------------------------------------------------------
+  - tenant_id: "prod-team-001"
+    apikey: "sk-prod-team-001-xyz789abc"
+    name: "产品团队 B"
+    enabled: true
+
+    # 使用阿里云通义千问 API
+    base_url_template: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    timeout: 120.0
+
+    decisions:
+      # 长上下文路由到通义千问 Max
+      - name: "route_long_context"
+        priority: 90
+        rules:
+          type: "signal"
+          signal: "context_length"
+          condition: "long"
+        model_refs:
+          - model: "qwen-max"
+            weight: 1.0
+            max_tokens: 32768
+
+      # 复杂问题路由
+      - name: "route_complex"
+        priority: 50
+        rules:
+          type: "signal"
+          signal: "complexity"
+          condition: "complex"
+        model_refs:
+          - model: "qwen-plus"
+            weight: 1.0
+
+      # 简单问题用轻量模型
+      - name: "route_simple"
+        priority: 10
+        rules:
+          type: "signal"
+          signal: "complexity"
+          condition: "simple"
+        model_refs:
+          - model: "qwen-turbo"
+            weight: 1.0
+
+      # 默认路由
+      - name: "default_route"
+        priority: 0
+        rules:
+          type: "or"
+          children:
+          - type: "signal"
+            signal: "complexity"
+            condition: "simple"
+          - type: "signal"
+            signal: "complexity"
+            condition: "complex"
+        model_refs:
+          - model: "qwen-plus"
+            weight: 1.0
+
+    created_at: "2026-04-02T11:00:00"
+    updated_at: "2026-04-02T11:00:00"
+
+  # --------------------------------------------------------
+  # 租户 3: 测试租户 (已禁用)
+  # --------------------------------------------------------
+  - tenant_id: "test-tenant-001"
+    apikey: "sk-test-tenant-001-disabled"
+    name: "测试租户 (已禁用)"
+    enabled: false                          # 禁用的租户无法调用 API
+    base_url_template: "http://localhost:8000/v1"
+    timeout: 60.0
+    decisions: []
+    created_at: "2026-04-01T00:00:00"
+    updated_at: "2026-04-02T12:00:00"
+
+  # --------------------------------------------------------
+  # 租户 4: 内部服务 (使用本地部署模型)
+  # --------------------------------------------------------
+  - tenant_id: "internal-service-001"
+    apikey: "sk-internal-service-key-123"
+    name: "内部服务"
+    enabled: true
+
+    # 使用本地部署的 vLLM 服务
+    # URL 模板支持 {model} 占位符
+    base_url_template: "http://llm-internal.example.com:8000/v1"
+    timeout: 300.0                         # 本地部署可能较慢
+
+    decisions:
+      # 所有请求都路由到本地模型
+      - name: "route_all"
+        priority: 0
+        rules:
+          type: "or"
+          children:
+          - type: "signal"
+            signal: "complexity"
+            condition: "simple"
+          - type: "signal"
+            signal: "complexity"
+            condition: "complex"
+        model_refs:
+          - model: "llama-3-70b"
+            weight: 1.0
+            max_tokens: 8192
+
+    created_at: "2026-04-02T09:00:00"
+    updated_at: "2026-04-02T09:00:00"
+
+  # --------------------------------------------------------
+  # 租户 5: 多模型供应商 (URL 模板包含模型路径)
+  # --------------------------------------------------------
+  - tenant_id: "multi-provider-001"
+    apikey: "sk-multi-provider-key-456"
+    name: "多模型供应商"
+    enabled: true
+
+    # URL 模板中的 {model} 会被实际模型名替换
+    # 例如: 选中 "gpt-4o" 后 URL 变为:
+    #   http://api.example.com/llm/gpt-4o/v1
+    base_url_template: "http://api.example.com/llm/{model}/v1"
+    timeout: 120.0
+
+    decisions:
+      - name: "route_by_complexity"
+        priority: 10
+        rules:
+          type: "signal"
+          signal: "complexity"
+          condition: "complex"
+        model_refs:
+          - model: "gpt-4o"
+            weight: 1.0
+          - model: "claude-3-opus"
+            weight: 0.8
+
+      - name: "default_route"
+        priority: 0
+        rules:
+          type: "or"
+          children:
+          - type: "signal"
+            signal: "complexity"
+            condition: "simple"
+          - type: "signal"
+            signal: "complexity"
+            condition: "complex"
+        model_refs:
+          - model: "gpt-4o-mini"
+            weight: 1.0
+          - model: "claude-3-haiku"
+            weight: 0.7
+
+    created_at: "2026-04-02T08:00:00"
+    updated_at: "2026-04-02T08:00:00"

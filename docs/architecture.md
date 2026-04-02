@@ -205,9 +205,10 @@ class MLClassifier:
 | 分类器 | 功能 | 输出 | 典型延迟 |
 |--------|------|------|---------|
 | `intent` | 意图识别 | 自定义标签 | 200-400ms |
-| `complexity` | 复杂度分析 | simple/medium/complex | 150-300ms |
+| `complexity` | 复杂度分析 | simple/complex | 150-300ms |
 | `pii` | 隐私检测 | detected/none | 100-200ms |
 | `security` | 安全检测 | safe/威胁类型 | 100-200ms |
+| `context_length` | 上下文长度 | short/long | <10ms (本地) |
 
 **配置示例**：
 ```yaml
@@ -252,6 +253,57 @@ class SemanticMatcher:
 - 相似问题识别
 - 语义缓存命中
 
+#### 3.2.4 上下文长度分类器（Context Length Classifier）
+
+**原理**：使用 HuggingFace tokenizer 在本地计算 token 数量，无需调用外部 API，延迟极低。
+
+```python
+class ContextLengthClassifier:
+    def __init__(self, tokenizer_path: str, threshold: int = 10000):
+        from transformers import AutoTokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        self.threshold = threshold
+
+    async def classify(self, text: str) -> SignalMatches:
+        token_count = len(self.tokenizer.encode(text))
+        label = "long" if token_count >= self.threshold else "short"
+        return SignalMatches(
+            context_length=TaskResult(
+                task=TaskType.CONTEXT_LENGTH,
+                label=label,
+                metadata={"token_count": token_count}
+            )
+        )
+```
+
+**配置示例**：
+```yaml
+models:
+  tokenizer_path: "~/Qwen3-tokenizer"  # HuggingFace tokenizer 路径
+  
+  classifier:
+    context_length:
+      enabled: true
+      threshold: 10000  # token 阈值
+
+decisions:
+  - name: "route_long_context"
+    priority: 90
+    rules:
+      type: "signal"
+      signal: "context_length"
+      condition: "long"
+    model_refs:
+      - model: "qwen3-max"
+        weight: 1.0
+        max_tokens: 32768  # 支持 max_tokens 过滤
+```
+
+**特点**：
+- **本地计算**：无需调用 API，延迟 < 10ms
+- **精确统计**：使用与模型一致的 tokenizer
+- **max_tokens 过滤**：可自动过滤不满足 token 需求的模型
+
 ### 3.3 信号聚合
 
 所有分类结果聚合为 `SignalMatches` 对象：
@@ -265,6 +317,7 @@ class SignalMatches:
     pii: TaskResult | None              # PII 检测
     security: TaskResult | None         # 安全检测
     complexity: TaskResult | None       # 复杂度分析
+    context_length: TaskResult | None   # 上下文长度 (NEW)
 ```
 
 ---
@@ -471,6 +524,55 @@ selection:
     weight_blend: 0.3           # 延迟与权重混合比例
 ```
 
+#### 5.1.3 max_tokens 过滤
+
+在选择模型前，根据上下文长度自动过滤不符合要求的模型：
+
+```python
+def _filter_by_max_tokens(
+    candidates: list[ModelRef],
+    signals: SignalMatches
+) -> list[ModelRef]:
+    """根据 token 数量过滤模型."""
+    if not signals.context_length:
+        return candidates
+    
+    token_count = signals.context_length.metadata.get("token_count")
+    if token_count is None:
+        return candidates
+    
+    # 过滤 max_tokens 足够的模型
+    filtered = [
+        m for m in candidates
+        if m.max_tokens is None or m.max_tokens >= token_count
+    ]
+    
+    # 如果全部过滤，返回第一个作为兜底
+    return filtered if filtered else [candidates[0]]
+```
+
+**配置示例**：
+```yaml
+decisions:
+  - name: "route_long_context"
+    rules:
+      type: "signal"
+      signal: "context_length"
+      condition: "long"
+    model_refs:
+      - model: "qwen3-max"
+        weight: 1.0
+        max_tokens: 32768  # 该模型支持的最大 token 数
+      - model: "qwen3-plus"
+        weight: 0.8
+        max_tokens: 16384
+```
+
+**过滤逻辑**：
+1. 从 `SignalMatches.context_length` 获取 token 数量
+2. 过滤掉 `max_tokens < token_count` 的模型
+3. 如果所有模型都被过滤，使用第一个模型作为兜底
+
 ### 5.2 代理层（Proxy Layer）
 
 #### 5.2.1 设计目标
@@ -670,6 +772,7 @@ server:
 models:
   base_url: "https://api.example.com/v1"
   api_key: "${API_KEY}"
+  tokenizer_path: "~/Qwen3-tokenizer"  # HuggingFace tokenizer 路径
   timeout: 120.0
 
   classifier:
@@ -682,6 +785,9 @@ models:
     security:
       model: "qwen3.5-plus"
       enabled: true
+    context_length:          # 上下文长度分类器
+      enabled: true
+      threshold: 10000       # token 阈值
 
 # 信号规则
 signals:
@@ -701,6 +807,17 @@ decisions:
       condition: "detected"
     action: "reject"
     reject_message: "检测到隐私信息"
+
+  - name: "route_long_context"
+    priority: 90
+    rules:
+      type: "signal"
+      signal: "context_length"
+      condition: "long"
+    model_refs:
+      - model: "qwen3-max"
+        weight: 1.0
+        max_tokens: 32768
 
   - name: "route_to_code_model"
     priority: 10
@@ -730,11 +847,236 @@ cache:
 
 ### B. API 接口列表
 
+#### 核心 API
+
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/v1/route` | POST | 路由决策 |
-| `/v1/chat/completions` | POST | OpenAI 兼容聊天 |
+| `/v1/chat/completions` | POST | OpenAI 兼容聊天（需租户认证） |
 | `/v1/feedback` | POST | 延迟反馈 |
 | `/v1/latency` | GET | 延迟统计 |
 | `/v1/config` | GET | 配置查询 |
 | `/healthz` | GET | 健康检查 |
+| `/readyz` | GET | 就绪检查 |
+
+#### 租户管理 API
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/tenants` | GET | 列出所有租户 |
+| `/v1/tenants` | POST | 创建租户 |
+| `/v1/tenants/{tenant_id}` | GET | 获取租户详情 |
+| `/v1/tenants/{tenant_id}` | PUT | 更新租户 |
+| `/v1/tenants/{tenant_id}` | DELETE | 删除租户 |
+
+---
+
+## 九、多租户支持
+
+### 9.1 设计目标
+
+多租户模块支持：
+1. **租户隔离**：每个租户独立的 API Key 和路由规则
+2. **灵活配置**：租户级别的 base_url_template 和 decisions
+3. **API Key 认证**：基于 Bearer Token 的身份验证
+
+### 9.2 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         API Gateway                              │
+│                    Authorization: Bearer <apikey>                │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Tenant Module                             │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  TenantManager                                            │   │
+│  │  - 租户 CRUD 操作                                         │   │
+│  │  - API Key 索引                                          │   │
+│  │  - YAML 持久化                                           │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│  输出: TenantConfig {tenant_id, apikey, base_url_template, ...}  │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        ChatProxy                                 │
+│  - 使用租户的 decisions 进行路由                                 │
+│  - 使用租户的 base_url_template 构建请求 URL                    │
+│  - 使用租户的 apikey 调用上游 API                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 9.3 租户配置结构
+
+```yaml
+# config/tenants.yaml
+tenants:
+  - tenant_id: "tenant-001"
+    apikey: "sk-tenant-001-key"
+    name: "租户 A"
+    enabled: true
+    base_url_template: "http://api-a.com/llm/{model}/v1"
+    timeout: 120.0
+    decisions:
+      - name: "default_route"
+        priority: 0
+        rules:
+          type: "or"
+          children: []
+        model_refs:
+          - model: "qwen3-max"
+            weight: 1.0
+```
+
+### 9.4 API Key 认证流程
+
+```python
+# 1. 提取 API Key
+apikey = extract_apikey(authorization_header)  # "Bearer sk-xxx" -> "sk-xxx"
+
+# 2. 查找租户
+tenant = tenant_manager.get_by_apikey(apikey)
+
+# 3. 验证租户
+if not tenant:
+    raise AuthenticationError("Invalid API key")
+if not tenant.enabled:
+    raise TenantDisabledError("Tenant is disabled")
+
+# 4. 使用租户配置进行路由
+base_url = build_base_url(tenant.base_url_template, selected_model)
+response = await client.chat_completion(
+    base_url=base_url,
+    api_key=tenant.apikey,
+    model=selected_model,
+    messages=messages
+)
+```
+
+### 9.5 动态 base_url
+
+每个租户可以配置独立的 `base_url_template`：
+
+```yaml
+base_url_template: "http://api.example.com/llm/{model}/v1"
+```
+
+`{model}` 占位符会被实际选中的模型名称替换：
+
+```python
+# 如果 model = "qwen3-max"
+# 则 URL = "http://api.example.com/llm/qwen3-max/v1"
+```
+
+### 9.6 配置协作机制
+
+#### config.yaml 与 tenants.yaml 的协作关系
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        config.yaml (全局配置)                    │
+│                                                                 │
+│  models:          → 所有租户共享的分类器模型配置                │
+│  signals:         → 所有租户共享的关键词规则                    │
+│  decisions:       → 默认路由规则 (租户无配置时使用)             │
+│  selection:       → 模型选择策略                                │
+│  cache:           → 缓存配置                                    │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ Signal 层使用全局配置
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    tenants.yaml (租户配置)                       │
+│                                                                 │
+│  tenant_id:       → 租户标识                                    │
+│  apikey:          → 租户 API Key                                │
+│  base_url_template: → 租户专属的上游 API 地址                   │
+│  decisions:       → 租户专属路由规则 (覆盖全局 decisions)        │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                │ Decision 层使用租户 decisions
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        请求处理流程                              │
+│                                                                 │
+│  1. Signal 层: 使用全局 signals + models 提取信号               │
+│     → 所有租户共享相同的信号提取逻辑                            │
+│                                                                 │
+│  2. Decision 层: 使用租户 decisions 进行路由决策                │
+│     → 每个租户可以有独立的路由策略                              │
+│                                                                 │
+│  3. Proxy 层: 使用租户 base_url_template + apikey 调用 API      │
+│     → 每个租户连接不同的上游服务                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 为什么 Signal 层共享而 Decision 层独立？
+
+| 层 | 共享/独立 | 原因 |
+|---|----------|------|
+| **Signal** | 共享 | 信号提取逻辑统一，减少维护成本，保证一致性 |
+| **Decision** | 独立 | 不同租户需要不同的路由策略和成本控制 |
+| **Proxy** | 独立 | 不同租户连接不同的上游服务和 API Key |
+
+#### 代码实现
+
+```python
+# Router 初始化时使用全局配置
+class Router:
+    def __init__(self, config: RouterConfig):
+        # Signal 层：使用全局 signals 和 models 配置
+        self.keyword_classifier = KeywordClassifier(config.signals.keyword_rules)
+        self.complexity_classifier = ComplexityClassifier(config.models.classifier.complexity)
+        self.context_length_classifier = ContextLengthClassifier(
+            tokenizer_path=config.models.tokenizer_path,
+            threshold=config.models.classifier.context_length.threshold
+        )
+
+    async def route(self, request, decisions=None):
+        # Signal 层：使用全局配置提取信号
+        signals = await self.classifier.classify(request.query)
+
+        # Decision 层：使用租户 decisions 或全局 decisions
+        effective_decisions = decisions if decisions is not None else self.config.decisions
+        result = self.decision_engine.evaluate(signals, effective_decisions)
+
+        return result
+
+
+# ChatProxy 使用租户配置
+class ChatProxy:
+    async def chat_stream(self, request, tenant):
+        # Signal 层：全局配置 (已在 Router 中初始化)
+        signals = await self.router.classifier.classify(query)
+
+        # Decision 层：使用租户 decisions
+        result = await self.router.route(
+            RoutingRequest(query=query),
+            decisions=tenant.decisions  # 租户专属规则
+        )
+
+        # Proxy 层：使用租户 base_url 和 apikey
+        base_url = build_base_url(tenant.base_url_template, result.selected_model)
+        response = await self.client.chat_completion(
+            base_url=base_url,
+            api_key=tenant.apikey,
+            model=result.selected_model,
+            messages=messages
+        )
+```
+
+#### 租户无 decisions 时的回退机制
+
+```python
+async def route(self, request, decisions=None):
+    # 如果租户提供了 decisions，使用租户的
+    # 否则使用全局 config.decisions
+    effective_decisions = decisions if decisions is not None else self.config.decisions
+
+    # 后续逻辑使用 effective_decisions...
+```
+
+全局 `config.yaml` 中的 `decisions` 作为默认值，租户可以通过配置覆盖。
