@@ -8,7 +8,7 @@ import structlog
 from mini_router.algorithm.selector import Registry
 from mini_router.algorithm.types import SelectionContext
 from mini_router.client import OpenAIClient
-from mini_router.config.config import DecisionAction, RouterConfig
+from mini_router.config.config import Decision, DecisionAction, RouterConfig
 from mini_router.decision.engine import Engine
 from mini_router.decision.types import DecisionResult
 from mini_router.metrics.latency import LatencyTracker
@@ -150,14 +150,23 @@ class Router:
         else:
             self.cache = MemoryCache(max_entries=self.config.cache.max_entries)
 
-    async def route(self, request: RoutingRequest) -> RoutingResult:
+    async def route(
+        self,
+        request: RoutingRequest,
+        decisions: list[Decision] | None = None,
+    ) -> RoutingResult:
         """
         Route a query through all layers.
+
+        Args:
+            request: The routing request containing the query.
+            decisions: Optional tenant-specific decisions. If provided, these
+                override the router's default decisions for this request.
 
         Flow:
         1. Check cache
         2. Extract signals (classify)
-        3. Evaluate decisions
+        3. Evaluate decisions (tenant-specific or default)
         4. Select model
         5. Return result
         """
@@ -190,8 +199,16 @@ class Router:
             complexity=signals.get_complexity_level(),
         )
 
-        # 3. Evaluate decisions
-        decision_result = self.decision_engine.evaluate(signals)
+        # 3. Evaluate decisions (use tenant-specific or default)
+        if decisions is not None:
+            # Create temporary engine for tenant-specific decisions
+            tenant_engine = Engine(
+                decisions=decisions,
+                strategy=self.config.selection.strategy.value,
+            )
+            decision_result = tenant_engine.evaluate(signals)
+        else:
+            decision_result = self.decision_engine.evaluate(signals)
 
         if decision_result is None:
             logger.warning("no_matching_decision", query=request.query[:50])
