@@ -345,8 +345,8 @@ class TestComplexityClassifier:
         classifier = ComplexityClassifier(config, client)
         assert classifier.name == "complexity"
 
-    def test_complexity_default_fallback_is_medium(self) -> None:
-        """Test ComplexityClassifier default fallback is 'medium'."""
+    def test_complexity_default_fallback_is_complex(self) -> None:
+        """Test that complexity classifier defaults to 'complex' fallback."""
         from mini_router.signal_layer.classifier import ComplexityClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
@@ -354,7 +354,7 @@ class TestComplexityClassifier:
         config = ClassifierModelConfig(model="test-model")
         client = OpenAIClient(base_url="http://localhost:8000/v1")
         classifier = ComplexityClassifier(config, client)
-        assert classifier._fallback_label == "medium"
+        assert classifier._fallback_label == "complex"
 
     def test_complexity_parse_response_normalizes_labels(self) -> None:
         """Test ComplexityClassifier normalizes labels."""
@@ -366,13 +366,18 @@ class TestComplexityClassifier:
         client = OpenAIClient(base_url="http://localhost:8000/v1")
         classifier = ComplexityClassifier(config, client)
 
+        # Simple labels
         assert classifier._parse_response("simple") == "simple"
-        assert classifier._parse_response("easy") == "simple"
+        assert classifier._parse_response("EASY") == "simple"
         assert classifier._parse_response("low") == "simple"
+        # Complex labels
         assert classifier._parse_response("complex") == "complex"
-        assert classifier._parse_response("hard") == "complex"
-        assert classifier._parse_response("medium") == "medium"
-        assert classifier._parse_response("unknown") == "medium"
+        assert classifier._parse_response("HARD") == "complex"
+        assert classifier._parse_response("difficult") == "complex"
+        # Unknown labels default to complex
+        assert classifier._parse_response("unknown") == "complex"
+        # Backward compatibility: medium maps to complex
+        assert classifier._parse_response("medium") == "complex"
 
 
 class TestUnifiedClassifierNewInterface:
