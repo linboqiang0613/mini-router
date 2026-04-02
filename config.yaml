@@ -34,7 +34,7 @@ models:
       model: "qwen3.5-plus"
       enabled: true
       timeout: 50.0
-      fallback_label: "medium"
+      fallback_label: "complex"
     context_length:                            # NEW: 上下文长度分类器
       model: "context-length-classifier"       # 模型名（本地计算，不需要实际 API）
       enabled: true
@@ -170,9 +170,6 @@ decisions:
         - type: "signal"
           signal: "complexity"
           condition: "simple"
-        - type: "signal"
-          signal: "complexity"
-          condition: "medium"
         - type: "signal"
           signal: "complexity"
           condition: "complex"
