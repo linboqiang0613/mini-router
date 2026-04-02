@@ -8,6 +8,7 @@ from mini_router.signal_layer.classifier import (
     PIIClassifier,
     SecurityClassifier,
     UnifiedClassifier,
+    ContextLengthClassifier,
 )
 from mini_router.signal_layer.embedder import (
     Embedder,
@@ -29,6 +30,7 @@ __all__ = [
     "SecurityClassifier",
     "ComplexityClassifier",
     "UnifiedClassifier",
+    "ContextLengthClassifier",
     "Embedder",
     "MockEmbedder",
     "OpenAIEmbedder",

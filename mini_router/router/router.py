@@ -19,6 +19,7 @@ from mini_router.signal_layer.classifier import (
     PIIClassifier,
     SecurityClassifier,
     UnifiedClassifier,
+    ContextLengthClassifier,
 )
 from mini_router.signal_layer.embedder import Embedder, MockEmbedder, OpenAIEmbedder
 from mini_router.signal_layer.types import SignalMatches, TaskType
@@ -108,14 +109,25 @@ class Router:
 
         # Complexity (neutral default)
         if classifier_config.complexity and classifier_config.complexity.enabled:
-            complexity_fallback = classifier_config.complexity.fallback_label or "medium"
+            complexity_fallback = classifier_config.complexity.fallback_label or "complex"
             classifiers.append(ComplexityClassifier(
                 config=classifier_config.complexity,
                 client=self._client,
                 fallback_label=complexity_fallback,
             ))
 
-        # 4. UnifiedClassifier
+        # 5. ContextLengthClassifier (local tokenizer)
+        tokenizer_path = self.config.models.tokenizer_path
+        if tokenizer_path and classifier_config.context_length and classifier_config.context_length.enabled:
+            threshold = classifier_config.context_length.threshold or 10000
+            fallback_label = classifier_config.context_length.fallback_label or "short"
+            classifiers.append(ContextLengthClassifier(
+                tokenizer_path=tokenizer_path,
+                threshold=threshold,
+                fallback_label=fallback_label,
+            ))
+
+        # 6. UnifiedClassifier
         self.classifier = UnifiedClassifier(classifiers)
 
         # === Embedder ===
@@ -249,6 +261,7 @@ class Router:
             candidate_models=decision_result.decision.model_refs,
             user_id=request.user_id,
             metadata={"decision_name": decision_result.decision.name},
+            signals=signals,  # Pass signals for max_tokens filtering
             latency_percentile=latency_config.latency_percentile,
             tpot_percentile=latency_config.tpot_percentile,
             ttft_percentile=latency_config.ttft_percentile,

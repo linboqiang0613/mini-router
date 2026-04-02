@@ -12,6 +12,7 @@ class SelectionContext:
     candidate_models: list["ModelRef"]
     user_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    signals: "SignalMatches | None" = None  # for max_tokens filtering
 
     # Latency-aware selection parameters
     latency_percentile: int = 50
@@ -33,3 +34,4 @@ class SelectionResult:
 
 # Import here to avoid circular dependency
 from mini_router.config.config import ModelRef  # noqa: E402
+from mini_router.signal_layer.types import SignalMatches  # noqa: E402
