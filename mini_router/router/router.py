@@ -245,6 +245,7 @@ class Router:
             candidate_models=decision_result.decision.model_refs,
             user_id=request.user_id,
             metadata={"decision_name": decision_result.decision.name},
+            signals=signals,  # Pass signals for max_tokens filtering
             latency_percentile=latency_config.latency_percentile,
             tpot_percentile=latency_config.tpot_percentile,
             ttft_percentile=latency_config.ttft_percentile,
