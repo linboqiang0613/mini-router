@@ -45,7 +45,7 @@ def basic_config() -> RouterConfig:
                     model="complexity-classifier",
                     enabled=False,
                     timeout=10.0,
-                    fallback_label="medium",
+                    fallback_label="complex",
                 ),
                 context_length=ClassifierModelConfig(
                     model="context-length-classifier",
