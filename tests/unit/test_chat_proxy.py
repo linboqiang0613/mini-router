@@ -269,3 +269,96 @@ class TestDynamicClient:
             # stream is called with ("POST", url, headers=headers, json=payload)
             assert call_args[0][1] == "http://dynamic-api.com/v1/chat/completions"
             assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_backward_compatibility(self) -> None:
+        """Test chat_completion uses constructor params when per-request params not provided."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            # Create client with constructor params (backward compatibility)
+            client = OpenAIClient(
+                timeout=60.0,
+                base_url="http://constructor-api.com/v1",
+                api_key="constructor-key",
+            )
+
+            # Call without per-request base_url/api_key
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+
+            # Verify constructor params were used
+            call_args = mock_httpx_client.post.call_args
+            assert call_args[0][0] == "http://constructor-api.com/v1/chat/completions"
+            assert "Bearer constructor-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_per_request_overrides_constructor(self) -> None:
+        """Test per-request params override constructor params."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            # Create client with constructor params
+            client = OpenAIClient(
+                timeout=60.0,
+                base_url="http://constructor-api.com/v1",
+                api_key="constructor-key",
+            )
+
+            # Call with per-request params (should override constructor)
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://per-request-api.com/v1",
+                api_key="per-request-key",
+            )
+
+            # Verify per-request params were used (not constructor)
+            call_args = mock_httpx_client.post.call_args
+            assert call_args[0][0] == "http://per-request-api.com/v1/chat/completions"
+            assert "Bearer per-request-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_raises_when_no_base_url(self) -> None:
+        """Test ValueError raised when base_url not provided anywhere."""
+        from unittest.mock import patch, MagicMock
+        from mini_router.client.openai_client import OpenAIClient
+
+        mock_httpx_client = MagicMock()
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            client = OpenAIClient(timeout=60.0)  # No base_url in constructor
+
+            # Call without base_url - should raise ValueError
+            with pytest.raises(ValueError, match="base_url is required"):
+                await client.chat_completion(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": "Hello"}],
+                )
