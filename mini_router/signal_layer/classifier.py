@@ -339,5 +339,62 @@ class UnifiedClassifier(Classifier):
             base.security = new.security
         if new.complexity is not None:
             base.complexity = new.complexity
+        if new.context_length is not None:
+            base.context_length = new.context_length
 
         return base
+
+
+class ContextLengthClassifier(Classifier):
+    """Token-based context length classifier using HuggingFace tokenizer."""
+
+    def __init__(
+        self,
+        tokenizer_path: str,
+        threshold: int = 10000,
+        fallback_label: str = "short",
+    ) -> None:
+        from transformers import AutoTokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        self.threshold = threshold
+        self._fallback_label = fallback_label
+
+    @property
+    def name(self) -> str:
+        return "context_length"
+
+    async def classify(self, text: str) -> SignalMatches:
+        """Calculate token count and return short/long label.
+
+        Args:
+            text: Formatted messages string (e.g., "user: hello\nassistant: hi\nuser: thanks")
+
+        Returns:
+            SignalMatches with context_length TaskResult containing label and token_count in metadata.
+        """
+        try:
+            token_count = len(self.tokenizer.encode(text))
+            label = "long" if token_count >= self.threshold else "short"
+            return SignalMatches(
+                context_length=TaskResult(
+                    task=TaskType.CONTEXT_LENGTH,
+                    label=label,
+                    confidence=1.0,
+                    metadata={"token_count": token_count},
+                )
+            )
+        except Exception as e:
+            logger.error(
+                "context_length_classifier_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                fallback=self._fallback_label,
+            )
+            return SignalMatches(
+                context_length=TaskResult(
+                    task=TaskType.CONTEXT_LENGTH,
+                    label=self._fallback_label,
+                    confidence=0.0,
+                    metadata={"fallback": True},
+                )
+            )
