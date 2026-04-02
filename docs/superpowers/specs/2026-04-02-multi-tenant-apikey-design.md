@@ -164,16 +164,91 @@ Content-Type: application/json
 }
 ```
 
-### 更新租户请求示例
+### 更新租户
+
+采用 **部分更新（Partial Update）** 模式：只更新请求中传入的字段，未传入的字段保持不变。
+
+#### 可更新字段
+
+| 字段 | 是否可更新 | 说明 |
+|------|-----------|------|
+| `tenant_id` | 否 | 租户标识，创建后不可修改 |
+| `apikey` | 是 | 可更换 apikey |
+| `name` | 是 | 租户名称 |
+| `enabled` | 是 | 启用/禁用状态 |
+| `base_url_template` | 是 | URL 模板 |
+| `timeout` | 是 | 超时时间 |
+| `decisions` | 是 | 路由决策规则（整体替换） |
+
+#### 更新基础信息
 
 ```bash
-PUT /v1/tenants/tenant-c
+PUT /v1/tenants/tenant-a
 Content-Type: application/json
 
 {
-  "name": "租户C-更新",
-  "enabled": false,
-  "timeout": 60.0
+  "name": "租户A-新名称",
+  "enabled": false
+}
+```
+
+#### 更换 apikey
+
+```bash
+PUT /v1/tenants/tenant-a
+Content-Type: application/json
+
+{
+  "apikey": "sk-new-apikey-xxx"
+}
+```
+
+#### 更新 decisions（整体替换）
+
+```bash
+PUT /v1/tenants/tenant-a
+Content-Type: application/json
+
+{
+  "decisions": [
+    {
+      "name": "new_route_rule",
+      "priority": 10,
+      "rules": {"type": "keyword", "name": "code_related"},
+      "model_refs": [{"model": "gpt-4", "weight": 1.0}]
+    }
+  ]
+}
+```
+
+#### 同时更新多个字段
+
+```bash
+PUT /v1/tenants/tenant-a
+Content-Type: application/json
+
+{
+  "name": "租户A-完整更新",
+  "apikey": "sk-new-key",
+  "base_url_template": "http://new-api.com/llm/{model}/v1",
+  "timeout": 60.0,
+  "enabled": true,
+  "decisions": [...]
+}
+```
+
+#### 成功响应
+
+```json
+{
+  "tenant_id": "tenant-a",
+  "apikey": "sk-new-***",
+  "name": "租户A-完整更新",
+  "enabled": true,
+  "base_url_template": "http://new-api.com/llm/{model}/v1",
+  "timeout": 60.0,
+  "decisions": [...],
+  "updated_at": "2026-04-02T10:30:00Z"
 }
 ```
 
@@ -192,7 +267,32 @@ class TenantManager:
     def get_by_id(self, tenant_id: str) -> TenantConfig | None: ...
     def list_all(self) -> list[TenantConfig]: ...
     def create(self, tenant: TenantConfig) -> None: ...
-    def update(self, tenant_id: str, updates: dict) -> TenantConfig | None: ...
+    def update(self, tenant_id: str, updates: dict) -> TenantConfig | None:
+        """部分更新租户配置。"""
+        tenant = self._tenants.get(tenant_id)
+        if not tenant:
+            return None
+
+        # 处理 apikey 更新：需要同步更新索引
+        if "apikey" in updates:
+            old_apikey = tenant.apikey
+            new_apikey = updates["apikey"]
+            self._apikey_index.pop(old_apikey, None)
+            self._apikey_index[new_apikey] = tenant_id
+
+        # 部分更新字段
+        update_data = tenant.model_dump()
+        update_data.update(updates)
+
+        # 重新构建 TenantConfig（触发 Pydantic 验证）
+        updated_tenant = TenantConfig(**update_data)
+        self._tenants[tenant_id] = updated_tenant
+
+        # 持久化
+        self.save()
+
+        return updated_tenant
+
     def delete(self, tenant_id: str) -> bool: ...
 ```
 
