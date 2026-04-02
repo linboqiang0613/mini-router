@@ -1,0 +1,4 @@
+# Multi-tenant API key configuration
+# This file stores tenant configurations for authentication and routing
+
+tenants: []
