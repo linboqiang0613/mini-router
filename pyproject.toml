@@ -13,6 +13,7 @@ dependencies = [
     "pyyaml>=6.0",
     "fastapi>=0.109",
     "uvicorn>=0.27",
+    "transformers>=5.0",  # HuggingFace tokenizer
 ]
 
 [project.optional-dependencies]

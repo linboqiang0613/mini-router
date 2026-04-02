@@ -1,6 +1,7 @@
 """Pytest configuration and fixtures."""
 
 import pytest
+from unittest.mock import MagicMock
 
 from mini_router.config.config import (
     ClassifierConfig,
@@ -14,6 +15,14 @@ from mini_router.config.config import (
     RuleType,
     SignalsConfig,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_httpx_async_client():
+    """Mock httpx.AsyncClient to avoid proxy issues in tests."""
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr("httpx.AsyncClient", MagicMock)
+        yield
 
 
 @pytest.fixture
@@ -45,7 +54,14 @@ def basic_config() -> RouterConfig:
                     model="complexity-classifier",
                     enabled=False,
                     timeout=10.0,
-                    fallback_label="medium",
+                    fallback_label="complex",
+                ),
+                context_length=ClassifierModelConfig(
+                    model="context-length-classifier",
+                    enabled=False,  # Disabled by default for existing tests
+                    timeout=5.0,
+                    fallback_label="short",
+                    threshold=10000,
                 ),
             ),
         },

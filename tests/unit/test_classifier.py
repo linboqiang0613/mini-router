@@ -200,34 +200,43 @@ class TestPIIClassifier:
 
     def test_pii_classifier_name(self) -> None:
         """Test PIIClassifier name property."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import PIIClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = PIIClassifier(config, client)
         assert classifier.name == "pii"
 
     def test_pii_default_fallback_is_detected(self) -> None:
         """Test PIIClassifier default fallback is 'detected'."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import PIIClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = PIIClassifier(config, client)
         assert classifier._fallback_label == "detected"
 
     def test_pii_field_name(self) -> None:
         """Test PIIClassifier field name is 'pii'."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import PIIClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = PIIClassifier(config, client)
         assert classifier._get_field_name() == "pii"
 
@@ -264,23 +273,29 @@ class TestIntentClassifier:
 
     def test_intent_classifier_name(self) -> None:
         """Test IntentClassifier name property."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import IntentClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = IntentClassifier(config, client)
         assert classifier.name == "intent"
 
     def test_intent_field_name(self) -> None:
         """Test IntentClassifier field name is 'intent'."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import IntentClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = IntentClassifier(config, client)
         assert classifier._get_field_name() == "intent"
 
@@ -295,34 +310,43 @@ class TestSecurityClassifier:
 
     def test_security_classifier_name(self) -> None:
         """Test SecurityClassifier name property."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import SecurityClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = SecurityClassifier(config, client)
         assert classifier.name == "security"
 
     def test_security_default_fallback_is_detected(self) -> None:
         """Test SecurityClassifier default fallback is 'detected'."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import SecurityClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = SecurityClassifier(config, client)
         assert classifier._fallback_label == "detected"
 
     def test_security_field_name(self) -> None:
         """Test SecurityClassifier field name is 'security'."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import SecurityClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = SecurityClassifier(config, client)
         assert classifier._get_field_name() == "security"
 
@@ -336,43 +360,57 @@ class TestComplexityClassifier:
 
     def test_complexity_classifier_name(self) -> None:
         """Test ComplexityClassifier name property."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import ComplexityClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = ComplexityClassifier(config, client)
         assert classifier.name == "complexity"
 
-    def test_complexity_default_fallback_is_medium(self) -> None:
-        """Test ComplexityClassifier default fallback is 'medium'."""
+    def test_complexity_default_fallback_is_complex(self) -> None:
+        """Test that complexity classifier defaults to 'complex' fallback."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import ComplexityClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = ComplexityClassifier(config, client)
-        assert classifier._fallback_label == "medium"
+        assert classifier._fallback_label == "complex"
 
     def test_complexity_parse_response_normalizes_labels(self) -> None:
         """Test ComplexityClassifier normalizes labels."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import ComplexityClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
 
         config = ClassifierModelConfig(model="test-model")
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = ComplexityClassifier(config, client)
 
+        # Simple labels
         assert classifier._parse_response("simple") == "simple"
-        assert classifier._parse_response("easy") == "simple"
+        assert classifier._parse_response("EASY") == "simple"
         assert classifier._parse_response("low") == "simple"
+        # Complex labels
         assert classifier._parse_response("complex") == "complex"
-        assert classifier._parse_response("hard") == "complex"
-        assert classifier._parse_response("medium") == "medium"
-        assert classifier._parse_response("unknown") == "medium"
+        assert classifier._parse_response("HARD") == "complex"
+        assert classifier._parse_response("difficult") == "complex"
+        # Unknown labels default to complex
+        assert classifier._parse_response("unknown") == "complex"
+        # Backward compatibility: medium maps to complex
+        assert classifier._parse_response("medium") == "complex"
 
 
 class TestUnifiedClassifierNewInterface:
@@ -435,16 +473,90 @@ class TestUnifiedClassifierNewInterface:
         assert unified.name == "unified"
 
 
+class TestContextLengthClassifier:
+    """Tests for ContextLengthClassifier."""
+
+    @pytest.mark.asyncio
+    async def test_context_length_classifier_short(self):
+        """Test ContextLengthClassifier returns 'short' for text below threshold."""
+        try:
+            from mini_router.signal_layer.classifier import ContextLengthClassifier
+
+            # Use a simple tokenizer for testing (GPT-2 is small and commonly available)
+            classifier = ContextLengthClassifier(
+                tokenizer_path="gpt2",
+                threshold=100,
+                fallback_label="short",
+            )
+
+            # Short text should return 'short'
+            short_text = "user: hello world"
+            result = await classifier.classify(short_text)
+
+            assert result.context_length is not None
+            assert result.context_length.label == "short"
+            assert result.context_length.metadata.get("token_count") < 100
+            assert result.context_length.confidence == 1.0
+        except ImportError:
+            pytest.skip("transformers not installed")
+
+    @pytest.mark.asyncio
+    async def test_context_length_classifier_long(self):
+        """Test ContextLengthClassifier returns 'long' for text above threshold."""
+        try:
+            from mini_router.signal_layer.classifier import ContextLengthClassifier
+
+            classifier = ContextLengthClassifier(
+                tokenizer_path="gpt2",
+                threshold=10,  # Low threshold for testing
+                fallback_label="short",
+            )
+
+            # Long text should return 'long'
+            long_text = "user: " + "hello " * 50  # Definitely >10 tokens
+            result = await classifier.classify(long_text)
+
+            assert result.context_length is not None
+            assert result.context_length.label == "long"
+            assert result.context_length.metadata.get("token_count") >= 10
+        except ImportError:
+            pytest.skip("transformers not installed")
+
+    @pytest.mark.asyncio
+    async def test_context_length_classifier_at_threshold(self):
+        """Test ContextLengthClassifier at exact threshold boundary."""
+        try:
+            from mini_router.signal_layer.classifier import ContextLengthClassifier
+
+            classifier = ContextLengthClassifier(
+                tokenizer_path="gpt2",
+                threshold=5,
+                fallback_label="short",
+            )
+
+            # Test that >= threshold is "long"
+            text_at_threshold = "user: hello world test"  # Should be around 5-6 tokens
+            result = await classifier.classify(text_at_threshold)
+
+            # token_count >= threshold should be "long"
+            token_count = result.context_length.metadata.get("token_count")
+            expected_label = "long" if token_count >= 5 else "short"
+            assert result.context_length.label == expected_label
+        except ImportError:
+            pytest.skip("transformers not installed")
+
+
 class TestMLClassifierTimeoutFallback:
     """Tests for ML classifier timeout and fallback behavior."""
 
     @pytest.mark.asyncio
     async def test_timeout_returns_fallback_result(self) -> None:
         """Test timeout returns fallback with confidence 0.0."""
+        from unittest.mock import patch, MagicMock, AsyncMock
+
         from mini_router.signal_layer.classifier import PIIClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
-        from unittest.mock import AsyncMock
 
         config = ClassifierModelConfig(
             model="test-model",
@@ -454,7 +566,8 @@ class TestMLClassifierTimeoutFallback:
         )
 
         # Mock client that takes longer than timeout
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         client.chat_completion = AsyncMock(side_effect=lambda *args, **kwargs: asyncio.sleep(2))
 
         classifier = PIIClassifier(config, client)
@@ -468,6 +581,8 @@ class TestMLClassifierTimeoutFallback:
     @pytest.mark.asyncio
     async def test_disabled_classifier_returns_empty(self) -> None:
         """Test disabled classifier returns empty SignalMatches."""
+        from unittest.mock import patch, MagicMock
+
         from mini_router.signal_layer.classifier import IntentClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
@@ -479,7 +594,8 @@ class TestMLClassifierTimeoutFallback:
             fallback_label="question",
         )
 
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         classifier = IntentClassifier(config, client)
 
         result = await classifier.classify("test text")
@@ -488,10 +604,11 @@ class TestMLClassifierTimeoutFallback:
     @pytest.mark.asyncio
     async def test_no_fallback_returns_empty_on_error(self) -> None:
         """Test classifier with no fallback returns empty SignalMatches on error."""
+        from unittest.mock import patch, MagicMock, AsyncMock
+
         from mini_router.signal_layer.classifier import IntentClassifier
         from mini_router.config.config import ClassifierModelConfig
         from mini_router.client import OpenAIClient
-        from unittest.mock import AsyncMock
 
         config = ClassifierModelConfig(
             model="test-model",
@@ -500,7 +617,8 @@ class TestMLClassifierTimeoutFallback:
             fallback_label=None,  # No fallback
         )
 
-        client = OpenAIClient(base_url="http://localhost:8000/v1")
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
         client.chat_completion = AsyncMock(side_effect=Exception("API error"))
 
         classifier = IntentClassifier(config, client)

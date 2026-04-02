@@ -9,11 +9,9 @@ Based on the Go implementation in pkg/latency/cache.go
 """
 
 import asyncio
-import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
-
 
 # Constants (matching Go implementation)
 TPOT_ALPHA = 0.3  # EMA weight: 30% new value, 70% historical

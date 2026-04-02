@@ -151,3 +151,427 @@ class TestChatProxy:
         query = proxy._extract_query(messages)
         assert "You are helpful" in query
         assert "Hi there" in query
+
+
+class TestDynamicClient:
+    """Tests for OpenAIClient with dynamic base_url and api_key."""
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_with_dynamic_params(self) -> None:
+        """Test chat_completion accepts dynamic base_url and api_key."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://dynamic-api.com/v1",
+                api_key="dynamic-key",
+            )
+
+            # Verify the call was made with correct URL
+            call_args = mock_httpx_client.post.call_args
+            assert call_args[0][0] == "http://dynamic-api.com/v1/chat/completions"
+            assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_without_api_key(self) -> None:
+        """Test chat_completion works without api_key."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://api.com/v1",
+                api_key="",  # Empty api_key
+            )
+
+            # Verify no Authorization header when api_key is empty
+            call_args = mock_httpx_client.post.call_args
+            assert "Authorization" not in call_args[1]["headers"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_stream_with_dynamic_params(self) -> None:
+        """Test chat_completion_stream accepts dynamic base_url and api_key."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+
+        # Mock the stream response
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        # Simulate SSE lines
+        async def mock_aiter_lines():
+            yield "data: {\"choices\": [{\"delta\": {\"content\": \"Hello\"}}]}"
+            yield "data: [DONE]"
+
+        mock_response.aiter_lines = mock_aiter_lines
+
+        # Mock the stream method to return an async context manager
+        mock_stream_context = MagicMock()
+        mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_context.__aexit__ = AsyncMock(return_value=None)
+        mock_httpx_client.stream = MagicMock(return_value=mock_stream_context)
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+
+            chunks = []
+            async for chunk in client.chat_completion_stream(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://dynamic-api.com/v1",
+                api_key="dynamic-key",
+            ):
+                chunks.append(chunk)
+
+            # Verify we got chunks
+            assert len(chunks) == 1
+            assert chunks[0]["choices"][0]["delta"]["content"] == "Hello"
+
+            # Verify the call was made with correct URL
+            call_args = mock_httpx_client.stream.call_args
+            # stream is called with ("POST", url, headers=headers, json=payload)
+            assert call_args[0][1] == "http://dynamic-api.com/v1/chat/completions"
+            assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_backward_compatibility(self) -> None:
+        """Test chat_completion uses constructor params when per-request params not provided."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            # Create client with constructor params (backward compatibility)
+            client = OpenAIClient(
+                timeout=60.0,
+                base_url="http://constructor-api.com/v1",
+                api_key="constructor-key",
+            )
+
+            # Call without per-request base_url/api_key
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+
+            # Verify constructor params were used
+            call_args = mock_httpx_client.post.call_args
+            assert call_args[0][0] == "http://constructor-api.com/v1/chat/completions"
+            assert "Bearer constructor-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_per_request_overrides_constructor(self) -> None:
+        """Test per-request params override constructor params."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        # Mock httpx.AsyncClient to avoid proxy issues
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            # Create client with constructor params
+            client = OpenAIClient(
+                timeout=60.0,
+                base_url="http://constructor-api.com/v1",
+                api_key="constructor-key",
+            )
+
+            # Call with per-request params (should override constructor)
+            result = await client.chat_completion(
+                model="gpt-4",
+                messages=[{"role": "user", "content": "Hello"}],
+                base_url="http://per-request-api.com/v1",
+                api_key="per-request-key",
+            )
+
+            # Verify per-request params were used (not constructor)
+            call_args = mock_httpx_client.post.call_args
+            assert call_args[0][0] == "http://per-request-api.com/v1/chat/completions"
+            assert "Bearer per-request-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_raises_when_no_base_url(self) -> None:
+        """Test ValueError raised when base_url not provided anywhere."""
+        from unittest.mock import patch, MagicMock
+        from mini_router.client.openai_client import OpenAIClient
+
+        mock_httpx_client = MagicMock()
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            client = OpenAIClient(timeout=60.0)  # No base_url in constructor
+
+            # Call without base_url - should raise ValueError
+            with pytest.raises(ValueError, match="base_url is required"):
+                await client.chat_completion(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": "Hello"}],
+                )
+
+
+class TestTenantAuthentication:
+    """Tests for tenant authentication in ChatProxy."""
+
+    def test_extract_apikey_valid(self) -> None:
+        """Test extract_apikey with valid Bearer token."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("Bearer sk-test-123")
+        assert apikey == "sk-test-123"
+
+    def test_extract_apikey_with_extra_spaces(self) -> None:
+        """Test extract_apikey handles extra spaces."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("Bearer   sk-test-123  ")
+        assert apikey == "sk-test-123"
+
+    def test_extract_apikey_none_header(self) -> None:
+        """Test extract_apikey with None header."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey(None)
+        assert apikey is None
+
+    def test_extract_apikey_empty_header(self) -> None:
+        """Test extract_apikey with empty header."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("")
+        assert apikey is None
+
+    def test_extract_apikey_no_bearer_prefix(self) -> None:
+        """Test extract_apikey without Bearer prefix."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("sk-test-123")
+        assert apikey is None
+
+    def test_extract_apikey_bearer_only(self) -> None:
+        """Test extract_apikey with Bearer prefix only."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        apikey = ChatProxy.extract_apikey("Bearer ")
+        assert apikey is None
+
+    def test_authenticate_tenant_success(self) -> None:
+        """Test authenticate_tenant with valid tenant."""
+        from unittest.mock import MagicMock
+        from mini_router.proxy.chat_proxy import ChatProxy, AuthenticationError, TenantDisabledError
+        from mini_router.tenant.types import TenantConfig
+
+        # Create mock tenant manager
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="sk-test-123",
+            name="Test Tenant",
+            enabled=True,
+            base_url_template="http://api.com/llm/{model}/v1",
+        )
+
+        mock_manager = MagicMock()
+        mock_manager.get_by_apikey.return_value = tenant
+
+        # Authenticate
+        result = ChatProxy.authenticate_tenant(mock_manager, "sk-test-123")
+        assert result.tenant_id == "tenant-1"
+        assert result.enabled is True
+
+    def test_authenticate_tenant_not_found(self) -> None:
+        """Test authenticate_tenant with invalid apikey."""
+        from unittest.mock import MagicMock
+        from mini_router.proxy.chat_proxy import ChatProxy, AuthenticationError
+
+        mock_manager = MagicMock()
+        mock_manager.get_by_apikey.return_value = None
+
+        # Should raise AuthenticationError
+        with pytest.raises(AuthenticationError, match="Invalid API key"):
+            ChatProxy.authenticate_tenant(mock_manager, "sk-invalid")
+
+    def test_authenticate_tenant_disabled(self) -> None:
+        """Test authenticate_tenant with disabled tenant."""
+        from unittest.mock import MagicMock
+        from mini_router.proxy.chat_proxy import ChatProxy, TenantDisabledError
+        from mini_router.tenant.types import TenantConfig
+
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="sk-test-123",
+            name="Test Tenant",
+            enabled=False,
+            base_url_template="http://api.com/llm/{model}/v1",
+        )
+
+        mock_manager = MagicMock()
+        mock_manager.get_by_apikey.return_value = tenant
+
+        # Should raise TenantDisabledError
+        with pytest.raises(TenantDisabledError, match="disabled"):
+            ChatProxy.authenticate_tenant(mock_manager, "sk-test-123")
+
+    @pytest.mark.asyncio
+    async def test_chat_with_tenant(self) -> None:
+        """Test chat method uses tenant decisions and base_url."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatRequest, ChatMessage
+        from mini_router.tenant.types import TenantConfig
+        from mini_router.config.config import Decision, RuleNode, RuleType, ModelRef
+
+        # Create mock router
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock()
+        mock_router.route.return_value = MagicMock(
+            selected_model="gpt-4",
+            decision_name="tenant-decision",
+            confidence=0.9,
+        )
+        mock_router.record_latency = AsyncMock()
+
+        # Create mock client
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock()
+        mock_client.chat_completion.return_value = {
+            "id": "test-123",
+            "choices": [
+                {"message": {"role": "assistant", "content": "Hello"}}
+            ],
+        }
+
+        # Create tenant with decisions
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="tenant-apikey",
+            name="Test Tenant",
+            enabled=True,
+            base_url_template="http://tenant-api.com/llm/{model}/v1",
+            decisions=[
+                Decision(
+                    name="tenant-rule",
+                    priority=1,
+                    rules=RuleNode(type=RuleType.KEYWORD, value="test"),
+                    model_refs=[ModelRef(model="gpt-4", weight=1.0)],
+                )
+            ],
+        )
+
+        # Create proxy and call chat
+        proxy = ChatProxy(mock_router, mock_client)
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="Hello")],
+        )
+
+        response = await proxy.chat(request, tenant=tenant)
+
+        # Verify router was called with tenant decisions
+        mock_router.route.assert_called_once()
+        call_args = mock_router.route.call_args
+        assert call_args[1]["decisions"] == tenant.decisions
+
+        # Verify client was called with tenant base_url and api_key
+        mock_client.chat_completion.assert_called_once()
+        client_call_args = mock_client.chat_completion.call_args
+        assert client_call_args[1]["base_url"] == "http://tenant-api.com/llm/gpt-4/v1"
+        assert client_call_args[1]["api_key"] == "tenant-apikey"
+
+    @pytest.mark.asyncio
+    async def test_chat_without_tenant(self) -> None:
+        """Test chat method works without tenant (backward compatibility)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatRequest, ChatMessage
+
+        # Create mock router
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock()
+        mock_router.route.return_value = MagicMock(
+            selected_model="gpt-4",
+            decision_name="default-decision",
+            confidence=0.9,
+        )
+        mock_router.record_latency = AsyncMock()
+
+        # Create mock client
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock()
+        mock_client.chat_completion.return_value = {
+            "id": "test-123",
+            "choices": [
+                {"message": {"role": "assistant", "content": "Hello"}}
+            ],
+        }
+
+        # Create proxy and call chat without tenant
+        proxy = ChatProxy(mock_router, mock_client)
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="Hello")],
+        )
+
+        response = await proxy.chat(request)
+
+        # Verify router was called without decisions
+        mock_router.route.assert_called_once()
+        call_args = mock_router.route.call_args
+        assert call_args[1]["decisions"] is None
+
+        # Verify client was called without base_url and api_key
+        mock_client.chat_completion.assert_called_once()
+        client_call_args = mock_client.chat_completion.call_args
+        assert client_call_args[1]["base_url"] is None
+        assert client_call_args[1]["api_key"] is None

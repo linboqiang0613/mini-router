@@ -2,12 +2,13 @@
 
 from mini_router.signal_layer.classifier import (
     Classifier,
-    KeywordClassifier,
+    ComplexityClassifier,
     IntentClassifier,
+    KeywordClassifier,
     PIIClassifier,
     SecurityClassifier,
-    ComplexityClassifier,
     UnifiedClassifier,
+    ContextLengthClassifier,
 )
 from mini_router.signal_layer.embedder import (
     Embedder,
@@ -16,9 +17,9 @@ from mini_router.signal_layer.embedder import (
     cosine_similarity,
 )
 from mini_router.signal_layer.types import (
-    TaskType,
-    TaskResult,
     SignalMatches,
+    TaskResult,
+    TaskType,
 )
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "SecurityClassifier",
     "ComplexityClassifier",
     "UnifiedClassifier",
+    "ContextLengthClassifier",
     "Embedder",
     "MockEmbedder",
     "OpenAIEmbedder",

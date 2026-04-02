@@ -8,18 +8,18 @@ import structlog
 from mini_router.algorithm.selector import Registry
 from mini_router.algorithm.types import SelectionContext
 from mini_router.client import OpenAIClient
-from mini_router.config.config import DecisionAction, RouterConfig
+from mini_router.config.config import Decision, DecisionAction, RouterConfig
 from mini_router.decision.engine import Engine
-from mini_router.decision.types import DecisionResult
 from mini_router.metrics.latency import LatencyTracker
-from mini_router.plugin.cache import Cache, CacheEntry, MemoryCache, SemanticCache
+from mini_router.plugin.cache import CacheEntry, MemoryCache, SemanticCache
 from mini_router.signal_layer.classifier import (
-    KeywordClassifier,
-    UnifiedClassifier,
+    ComplexityClassifier,
     IntentClassifier,
+    KeywordClassifier,
     PIIClassifier,
     SecurityClassifier,
-    ComplexityClassifier,
+    UnifiedClassifier,
+    ContextLengthClassifier,
 )
 from mini_router.signal_layer.embedder import Embedder, MockEmbedder, OpenAIEmbedder
 from mini_router.signal_layer.types import SignalMatches, TaskType
@@ -109,14 +109,25 @@ class Router:
 
         # Complexity (neutral default)
         if classifier_config.complexity and classifier_config.complexity.enabled:
-            complexity_fallback = classifier_config.complexity.fallback_label or "medium"
+            complexity_fallback = classifier_config.complexity.fallback_label or "complex"
             classifiers.append(ComplexityClassifier(
                 config=classifier_config.complexity,
                 client=self._client,
                 fallback_label=complexity_fallback,
             ))
 
-        # 4. UnifiedClassifier
+        # 5. ContextLengthClassifier (local tokenizer)
+        tokenizer_path = self.config.models.tokenizer_path
+        if tokenizer_path and classifier_config.context_length and classifier_config.context_length.enabled:
+            threshold = classifier_config.context_length.threshold or 10000
+            fallback_label = classifier_config.context_length.fallback_label or "short"
+            classifiers.append(ContextLengthClassifier(
+                tokenizer_path=tokenizer_path,
+                threshold=threshold,
+                fallback_label=fallback_label,
+            ))
+
+        # 6. UnifiedClassifier
         self.classifier = UnifiedClassifier(classifiers)
 
         # === Embedder ===
@@ -150,14 +161,23 @@ class Router:
         else:
             self.cache = MemoryCache(max_entries=self.config.cache.max_entries)
 
-    async def route(self, request: RoutingRequest) -> RoutingResult:
+    async def route(
+        self,
+        request: RoutingRequest,
+        decisions: list[Decision] | None = None,
+    ) -> RoutingResult:
         """
         Route a query through all layers.
+
+        Args:
+            request: The routing request containing the query.
+            decisions: Optional tenant-specific decisions. If provided, these
+                override the router's default decisions for this request.
 
         Flow:
         1. Check cache
         2. Extract signals (classify)
-        3. Evaluate decisions
+        3. Evaluate decisions (tenant-specific or default)
         4. Select model
         5. Return result
         """
@@ -190,8 +210,16 @@ class Router:
             complexity=signals.get_complexity_level(),
         )
 
-        # 3. Evaluate decisions
-        decision_result = self.decision_engine.evaluate(signals)
+        # 3. Evaluate decisions (use tenant-specific or default)
+        if decisions is not None:
+            # Create temporary engine for tenant-specific decisions
+            tenant_engine = Engine(
+                decisions=decisions,
+                strategy=self.config.selection.strategy.value,
+            )
+            decision_result = tenant_engine.evaluate(signals)
+        else:
+            decision_result = self.decision_engine.evaluate(signals)
 
         if decision_result is None:
             logger.warning("no_matching_decision", query=request.query[:50])
@@ -233,6 +261,7 @@ class Router:
             candidate_models=decision_result.decision.model_refs,
             user_id=request.user_id,
             metadata={"decision_name": decision_result.decision.name},
+            signals=signals,  # Pass signals for max_tokens filtering
             latency_percentile=latency_config.latency_percentile,
             tpot_percentile=latency_config.tpot_percentile,
             ttft_percentile=latency_config.ttft_percentile,

@@ -13,6 +13,7 @@ class TaskType(str, Enum):
     PII = "pii"
     SECURITY = "security"
     COMPLEXITY = "complexity"
+    CONTEXT_LENGTH = "context_length"
 
 
 @dataclass
@@ -36,6 +37,7 @@ class SignalMatches:
     pii: TaskResult | None = None
     security: TaskResult | None = None
     complexity: TaskResult | None = None
+    context_length: TaskResult | None = None
 
     def has_keyword_match(self, name: str) -> bool:
         """Check if a keyword rule matched."""
@@ -62,10 +64,14 @@ class SignalMatches:
         return self.security.label.lower() not in ("safe", "benign", "none", "normal")
 
     def get_complexity_level(self) -> str:
-        """Get the complexity level (simple/medium/complex)."""
+        """Get the complexity level (simple/complex)."""
         if self.complexity is None:
-            return "medium"  # default
-        return self.complexity.label.lower()
+            return "complex"  # Default to complex (safe strategy)
+        label = self.complexity.label.lower()
+        # Backward compatibility: medium treated as complex
+        if label in ("simple", "easy", "low"):
+            return "simple"
+        return "complex"
 
     def is_complex(self) -> bool:
         """Check if the query is complex."""
@@ -74,3 +80,9 @@ class SignalMatches:
     def is_simple(self) -> bool:
         """Check if the query is simple."""
         return self.get_complexity_level() == "simple"
+
+    def get_context_length(self) -> int | None:
+        """Get the token count from context_length result."""
+        if self.context_length is None:
+            return None
+        return self.context_length.metadata.get("token_count")

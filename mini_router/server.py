@@ -1,7 +1,6 @@
 """HTTP API server for mini-router."""
 
 import argparse
-import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,13 +8,21 @@ from typing import Any
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from mini_router.config.config import RouterConfig
 from mini_router.proxy import ChatProxy, ChatRequest
+from mini_router.proxy.chat_proxy import AuthenticationError, TenantDisabledError
 from mini_router.router.router import Router, RoutingRequest
+from mini_router.tenant import (
+    TenantConfig,
+    TenantCreateRequest,
+    TenantResponse,
+    TenantUpdateRequest,
+)
+from mini_router.tenant.manager import TenantManager
 
 logger = structlog.get_logger()
 
@@ -95,6 +102,7 @@ class LatencyStatsResponse(BaseModel):
 _router: Router | None = None
 _config: RouterConfig | None = None
 _chat_proxy: ChatProxy | None = None
+_tenant_manager: TenantManager | None = None
 
 
 def get_router() -> Router:
@@ -114,6 +122,15 @@ def get_chat_proxy() -> ChatProxy:
         router = get_router()
         _chat_proxy = ChatProxy(router, router.client)
     return _chat_proxy
+
+
+def get_tenant_manager() -> TenantManager:
+    """Get or create the tenant manager instance."""
+    global _tenant_manager
+    if _tenant_manager is None:
+        _tenant_manager = TenantManager()
+        _tenant_manager.load()
+    return _tenant_manager
 
 
 def create_default_config() -> RouterConfig:
@@ -332,11 +349,79 @@ async def get_model_latency_stats(model: str) -> dict[str, Any]:
     return stats
 
 
+# === Tenant Management ===
+
+
+@app.get("/v1/tenants", response_model=list[TenantResponse])
+async def list_tenants() -> list[TenantResponse]:
+    """List all tenants."""
+    manager = get_tenant_manager()
+    tenants = manager.list_all()
+    return [TenantResponse.from_config(tenant) for tenant in tenants]
+
+
+@app.get("/v1/tenants/{tenant_id}", response_model=TenantResponse)
+async def get_tenant(tenant_id: str) -> TenantResponse:
+    """Get a single tenant by ID."""
+    manager = get_tenant_manager()
+    tenant = manager.get_by_id(tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+    return TenantResponse.from_config(tenant)
+
+
+@app.post("/v1/tenants", response_model=TenantResponse, status_code=201)
+async def create_tenant(request: TenantCreateRequest) -> TenantResponse:
+    """Create a new tenant."""
+    manager = get_tenant_manager()
+    try:
+        tenant = TenantConfig(**request.model_dump())
+        created = manager.create(tenant)
+        return TenantResponse.from_config(created)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/v1/tenants/{tenant_id}", response_model=TenantResponse)
+async def update_tenant(tenant_id: str, request: TenantUpdateRequest) -> TenantResponse:
+    """Update a tenant (partial update)."""
+    manager = get_tenant_manager()
+    # Only include non-None fields in the update
+    updates = {k: v for k, v in request.model_dump().items() if v is not None}
+    if not updates:
+        # No updates provided, just return current tenant
+        tenant = manager.get_by_id(tenant_id)
+        if tenant is None:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+        return TenantResponse.from_config(tenant)
+
+    try:
+        updated = manager.update(tenant_id, updates)
+        if updated is None:
+            raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+        return TenantResponse.from_config(updated)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/v1/tenants/{tenant_id}")
+async def delete_tenant(tenant_id: str) -> dict[str, str]:
+    """Delete a tenant."""
+    manager = get_tenant_manager()
+    deleted = manager.delete(tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+    return {"status": "deleted"}
+
+
 # === Chat Completions ===
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest) -> Any:
+async def chat_completions(
+    request: ChatRequest,
+    authorization: str | None = Header(default=None),
+) -> Any:
     """
     OpenAI-compatible chat completions endpoint.
 
@@ -344,13 +429,29 @@ async def chat_completions(request: ChatRequest) -> Any:
     If `stream=false`, returns complete JSON response.
 
     The model will be automatically selected by the router if not specified.
+
+    Requires tenant authentication via Authorization header (Bearer token).
     """
     proxy = get_chat_proxy()
+    manager = get_tenant_manager()
+
+    # Extract and validate API key
+    apikey = proxy.extract_apikey(authorization)
+    if apikey is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
+    # Authenticate tenant
+    try:
+        tenant = proxy.authenticate_tenant(manager, apikey)
+    except AuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except TenantDisabledError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     if request.stream:
         # Return SSE streaming response
         async def generate_sse() -> AsyncGenerator[str, None]:
-            async for chunk in proxy.chat_stream(request):
+            async for chunk in proxy.chat_stream(request, tenant=tenant):
                 yield chunk.to_sse()
             yield "data: [DONE]\n\n"
 
@@ -365,7 +466,7 @@ async def chat_completions(request: ChatRequest) -> Any:
         )
     else:
         # Return complete JSON response
-        return await proxy.chat(request)
+        return await proxy.chat(request, tenant=tenant)
 
 
 # === Main ===
