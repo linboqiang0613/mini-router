@@ -64,10 +64,14 @@ class SignalMatches:
         return self.security.label.lower() not in ("safe", "benign", "none", "normal")
 
     def get_complexity_level(self) -> str:
-        """Get the complexity level (simple/medium/complex)."""
+        """Get the complexity level (simple/complex)."""
         if self.complexity is None:
-            return "medium"  # default
-        return self.complexity.label.lower()
+            return "complex"  # Default to complex (safe strategy)
+        label = self.complexity.label.lower()
+        # Backward compatibility: medium treated as complex
+        if label in ("simple", "easy", "low"):
+            return "simple"
+        return "complex"
 
     def is_complex(self) -> bool:
         """Check if the query is complex."""
