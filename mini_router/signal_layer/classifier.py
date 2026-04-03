@@ -98,6 +98,7 @@ class MLClassifierBase(Classifier):
                 {"role": "user", "content": text},
             ],
             max_tokens=50,
+            **self.config.extra_params,
         )
 
         content = response["choices"][0]["message"]["content"]

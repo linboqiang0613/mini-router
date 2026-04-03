@@ -20,21 +20,33 @@ models:
       enabled: true
       timeout: 50.0
       fallback_label: null
+      extra_params:
+        chat_template_kwargs:
+          enable_thinking: false
     pii:
       model: "qwen3.5-plus"
       enabled: true
       timeout: 50.0
       fallback_label: "detected"
+      extra_params:
+        chat_template_kwargs:
+          enable_thinking: false
     security:
       model: "qwen3.5-plus"
       enabled: true
       timeout: 50.0
       fallback_label: "detected"
+      extra_params:
+        chat_template_kwargs:
+          enable_thinking: false
     complexity:
       model: "qwen3.5-plus"
       enabled: true
       timeout: 50.0
       fallback_label: "complex"
+      extra_params:
+        chat_template_kwargs:
+          enable_thinking: false
     context_length:                            # NEW: 上下文长度分类器
       model: "context-length-classifier"       # 模型名（本地计算，不需要实际 API）
       enabled: true

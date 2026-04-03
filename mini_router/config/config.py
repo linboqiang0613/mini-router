@@ -49,6 +49,10 @@ class ClassifierModelConfig(BaseModel):
         description="Default label when timeout/error occurs. None means no fallback"
     )
     threshold: int | None = Field(None, description="Threshold for context_length classifier only")
+    extra_params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra parameters to pass to API calls (e.g., enable_thinking=False)"
+    )
 
 
 class ClassifierConfig(BaseModel):

@@ -178,6 +178,8 @@ class ChatProxy:
                 kwargs["presence_penalty"] = request.presence_penalty
             if request.frequency_penalty is not None:
                 kwargs["frequency_penalty"] = request.frequency_penalty
+            if request.chat_template_kwargs is not None:
+                kwargs["chat_template_kwargs"] = request.chat_template_kwargs
 
             # Stream from selected model
             messages = [msg.model_dump() for msg in request.messages]
@@ -347,6 +349,8 @@ class ChatProxy:
                 kwargs["presence_penalty"] = request.presence_penalty
             if request.frequency_penalty is not None:
                 kwargs["frequency_penalty"] = request.frequency_penalty
+            if request.chat_template_kwargs is not None:
+                kwargs["chat_template_kwargs"] = request.chat_template_kwargs
 
             # Call API (non-streaming)
             messages = [msg.model_dump() for msg in request.messages]

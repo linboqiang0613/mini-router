@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     user: str | None = None
     # Additional parameters
     metadata: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
 
 
 class ChatChoiceDelta(BaseModel):
