@@ -8,8 +8,9 @@ from typing import Any
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from mini_router.config.config import RouterConfig
@@ -218,6 +219,23 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Handle validation errors and log the request body."""
+    body = await request.body()
+    logger.error(
+        "request_validation_error",
+        path=request.url.path,
+        method=request.method,
+        body=body.decode("utf-8", errors="replace"),
+        errors=exc.errors(),
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": body.decode("utf-8", errors="replace")},
+    )
 
 
 # === Routes ===

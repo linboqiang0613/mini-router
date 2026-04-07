@@ -11,8 +11,10 @@ class ChatMessage(BaseModel):
     """A single chat message."""
 
     role: str
-    content: str
+    content: str | list[dict[str, Any]] | None = None  # Support string, array format, or null (for tool calls)
     name: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None  # Tool calls in assistant message
+    tool_call_id: str | None = None  # For tool response messages
 
 
 class ChatRequest(BaseModel):
@@ -29,6 +31,9 @@ class ChatRequest(BaseModel):
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
     user: str | None = None
+    # Function calling / tools
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
     # Additional parameters
     metadata: dict[str, Any] | None = None
     chat_template_kwargs: dict[str, Any] | None = None
@@ -39,6 +44,7 @@ class ChatChoiceDelta(BaseModel):
 
     role: str | None = None
     content: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class ChatChoice(BaseModel):

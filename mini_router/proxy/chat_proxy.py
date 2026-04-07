@@ -180,6 +180,10 @@ class ChatProxy:
                 kwargs["frequency_penalty"] = request.frequency_penalty
             if request.chat_template_kwargs is not None:
                 kwargs["chat_template_kwargs"] = request.chat_template_kwargs
+            if request.tools is not None:
+                kwargs["tools"] = request.tools
+            if request.tool_choice is not None:
+                kwargs["tool_choice"] = request.tool_choice
 
             # Stream from selected model
             messages = [msg.model_dump() for msg in request.messages]
@@ -219,6 +223,7 @@ class ChatProxy:
                             delta=ChatChoiceDelta(
                                 role=delta.get("role"),
                                 content=content if content else None,
+                                tool_calls=delta.get("tool_calls"),
                             ),
                             finish_reason=choice.get("finish_reason"),
                         )
@@ -351,6 +356,10 @@ class ChatProxy:
                 kwargs["frequency_penalty"] = request.frequency_penalty
             if request.chat_template_kwargs is not None:
                 kwargs["chat_template_kwargs"] = request.chat_template_kwargs
+            if request.tools is not None:
+                kwargs["tools"] = request.tools
+            if request.tool_choice is not None:
+                kwargs["tool_choice"] = request.tool_choice
 
             # Call API (non-streaming)
             messages = [msg.model_dump() for msg in request.messages]
@@ -398,7 +407,8 @@ class ChatProxy:
                         index=choice.get("index", 0),
                         message=ChatMessage(
                             role=message.get("role", "assistant"),
-                            content=message.get("content", ""),
+                            content=message.get("content"),
+                            tool_calls=message.get("tool_calls"),
                         ),
                         finish_reason=choice.get("finish_reason"),
                     )
@@ -445,10 +455,31 @@ class ChatProxy:
         """Extract query from chat messages.
 
         Uses the last user message as the query for routing.
+        Handles both string content and array content format.
         """
         for msg in reversed(messages):
             if msg.role == "user":
-                return msg.content
+                return self._content_to_str(msg.content)
 
         # Fallback: join all message content
-        return " ".join(msg.content for msg in messages if msg.content)
+        return " ".join(self._content_to_str(msg.content) for msg in messages if msg.content)
+
+    def _content_to_str(self, content: str | list[dict[str, Any]]) -> str:
+        """Convert content to string for routing.
+
+        Args:
+            content: Either a string or array of content blocks.
+
+        Returns:
+            String representation of content.
+        """
+        if isinstance(content, str):
+            return content
+
+        # Array format: extract text from type="text" blocks
+        text_parts = []
+        for block in content:
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+
+        return " ".join(text_parts)

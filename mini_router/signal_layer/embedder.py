@@ -16,12 +16,12 @@ class Embedder(ABC):
     """Abstract embedder interface."""
 
     @abstractmethod
-    async def embed(self, text: str) -> np.ndarray:
-        """Generate embedding for text."""
+    async def embed(self, text: str | list[dict[str, Any]]) -> np.ndarray:
+        """Generate embedding for text. Supports string or content array format."""
         pass
 
     @abstractmethod
-    async def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+    async def embed_batch(self, texts: list[str | list[dict[str, Any]]]) -> list[np.ndarray]:
         """Generate embeddings for multiple texts."""
         pass
 
@@ -40,13 +40,22 @@ class MockEmbedder(Embedder):
 
     async def embed(self, text: str) -> np.ndarray:
         """Generate mock embedding based on text hash."""
+        # Handle both string and list content (from ChatMessage.content)
+        if isinstance(text, list):
+            # Extract text from content blocks
+            text_parts = []
+            for block in text:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            text = " ".join(text_parts)
+
         # Use text hash to generate deterministic embedding
         np.random.seed(hash(text) % (2**32))
         embedding = np.random.randn(self._dimension).astype(np.float32)
         # Normalize to unit vector
         return embedding / np.linalg.norm(embedding)
 
-    async def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+    async def embed_batch(self, texts: list[str | list[dict[str, Any]]]) -> list[np.ndarray]:
         """Generate mock embeddings for multiple texts."""
         return [await self.embed(text) for text in texts]
 
@@ -78,20 +87,32 @@ class OpenAIEmbedder(Embedder):
         )
         self._dimension: int | None = None
 
-    async def embed(self, text: str) -> np.ndarray:
+    async def embed(self, text: str | list[dict[str, Any]]) -> np.ndarray:
         """Generate embedding for text."""
         embeddings = await self.embed_batch([text])
         return embeddings[0]
 
-    async def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+    async def embed_batch(self, texts: list[str | list[dict[str, Any]]]) -> list[np.ndarray]:
         """Generate embeddings for multiple texts."""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        # Convert any list content to string
+        string_texts = []
+        for text in texts:
+            if isinstance(text, list):
+                text_parts = []
+                for block in text:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                string_texts.append(" ".join(text_parts))
+            else:
+                string_texts.append(text)
+
         payload = {
             "model": self.config.model,
-            "input": texts,
+            "input": string_texts,
         }
 
         response = await self.client.post(
