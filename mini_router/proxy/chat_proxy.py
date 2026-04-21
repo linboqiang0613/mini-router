@@ -467,19 +467,31 @@ class ChatProxy:
     def _content_to_str(self, content: str | list[dict[str, Any]]) -> str:
         """Convert content to string for routing.
 
+        Supports text and image_url content types per OpenAI API format:
+        - {"type": "text", "text": "..."}
+        - {"type": "image_url", "image_url": {"url": "..."}}
+
         Args:
             content: Either a string or array of content blocks.
 
         Returns:
-            String representation of content.
+            String representation of content (text parts only, images are noted).
         """
         if isinstance(content, str):
             return content
 
         # Array format: extract text from type="text" blocks
         text_parts = []
+        has_image = False
         for block in content:
-            if block.get("type") == "text":
+            block_type = block.get("type")
+            if block_type == "text":
                 text_parts.append(block.get("text", ""))
+            elif block_type == "image_url":
+                has_image = True
+
+        # Append image marker if images are present
+        if has_image:
+            text_parts.append("[图片]")
 
         return " ".join(text_parts)

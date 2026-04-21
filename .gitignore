@@ -1,5 +1,11 @@
 .gitignore
+.claude/
+mini_router/.DS_Store
 .DS_Store
+CLAUDE.md
 __pycache__/
 *.pyc
 docs/superpowers/
+docs/innovative_proposal/
+openspec/
+

@@ -38,16 +38,27 @@ class MockEmbedder(Embedder):
     def __init__(self, dimension: int = 768) -> None:
         self._dimension = dimension
 
-    async def embed(self, text: str) -> np.ndarray:
-        """Generate mock embedding based on text hash."""
+    async def embed(self, text: str | list[dict[str, Any]]) -> np.ndarray:
+        """Generate mock embedding based on text hash.
+
+        Supports text and image_url content types per OpenAI API format:
+        - {"type": "text", "text": "..."}
+        - {"type": "image_url", "image_url": {"url": "..."}}
+        """
         # Handle both string and list content (from ChatMessage.content)
         if isinstance(text, list):
             # Extract text from content blocks
             text_parts = []
+            has_image = False
             for block in text:
                 if isinstance(block, dict) and block.get("type") == "text":
                     text_parts.append(block.get("text", ""))
+                elif isinstance(block, dict) and block.get("type") == "image_url":
+                    has_image = True
             text = " ".join(text_parts)
+            # Include image marker in embedding text for semantic distinction
+            if has_image:
+                text = f"[含图片]{text}"
 
         # Use text hash to generate deterministic embedding
         np.random.seed(hash(text) % (2**32))
@@ -99,14 +110,22 @@ class OpenAIEmbedder(Embedder):
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         # Convert any list content to string
+        # Supports text and image_url content types per OpenAI API format
         string_texts = []
         for text in texts:
             if isinstance(text, list):
                 text_parts = []
+                has_image = False
                 for block in text:
                     if isinstance(block, dict) and block.get("type") == "text":
                         text_parts.append(block.get("text", ""))
-                string_texts.append(" ".join(text_parts))
+                    elif isinstance(block, dict) and block.get("type") == "image_url":
+                        has_image = True
+                result = " ".join(text_parts)
+                # Include image marker for semantic distinction
+                if has_image:
+                    result = f"[含图片]{result}"
+                string_texts.append(result)
             else:
                 string_texts.append(text)
 
