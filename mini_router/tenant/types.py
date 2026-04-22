@@ -13,6 +13,10 @@ class TenantConfig(BaseModel):
 
     tenant_id: str = Field(..., description="Unique tenant identifier")
     apikey: str = Field(..., description="API key for authentication")
+    apikey_pool: list[str] = Field(
+        default_factory=list,
+        description="Pool of API keys for calling LLM services (rotated per request)",
+    )
     name: str | None = Field(None, description="Human-readable tenant name")
     enabled: bool = Field(True, description="Whether tenant is enabled")
     base_url_template: str = Field(
@@ -32,6 +36,7 @@ class TenantCreateRequest(BaseModel):
 
     tenant_id: str
     apikey: str
+    apikey_pool: list[str] = Field(default_factory=list)
     name: str | None = None
     enabled: bool = True
     base_url_template: str
@@ -43,6 +48,7 @@ class TenantUpdateRequest(BaseModel):
     """Request body for updating a tenant (partial update)."""
 
     apikey: str | None = None
+    apikey_pool: list[str] | None = None
     name: str | None = None
     enabled: bool | None = None
     base_url_template: str | None = None
@@ -55,6 +61,7 @@ class TenantResponse(BaseModel):
 
     tenant_id: str
     apikey: str  # Will be masked in response
+    apikey_pool_size: int  # Number of keys in pool (not the actual keys)
     name: str | None
     enabled: bool
     base_url_template: str
@@ -73,6 +80,7 @@ class TenantResponse(BaseModel):
         return cls(
             tenant_id=config.tenant_id,
             apikey=apikey,
+            apikey_pool_size=len(config.apikey_pool),
             name=config.name,
             enabled=config.enabled,
             base_url_template=config.base_url_template,
