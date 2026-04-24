@@ -5,6 +5,7 @@ from typing import Any
 
 import structlog
 
+from mini_router.proxy.apikey_selector import ApiKeyPoolSelector
 from mini_router.proxy.types import (
     ChatChoice,
     ChatChoiceDelta,
@@ -45,6 +46,7 @@ class ChatProxy:
         """
         self.router = router
         self.client = client
+        self.apikey_selector = ApiKeyPoolSelector()
 
     @staticmethod
     def extract_apikey(authorization: str | None) -> str | None:
@@ -193,7 +195,7 @@ class ChatProxy:
             api_key = None
             if tenant:
                 base_url = build_base_url(tenant.base_url_template, selected_model)
-                api_key = tenant.apikey
+                api_key = await self.apikey_selector.get_next_apikey(tenant)
 
             async for chunk in self.client.chat_completion_stream(
                 model=selected_model,
@@ -369,7 +371,7 @@ class ChatProxy:
             api_key = None
             if tenant:
                 base_url = build_base_url(tenant.base_url_template, selected_model)
-                api_key = tenant.apikey
+                api_key = await self.apikey_selector.get_next_apikey(tenant)
 
             response = await self.client.chat_completion(
                 model=selected_model,
