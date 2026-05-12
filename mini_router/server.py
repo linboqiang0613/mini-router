@@ -222,9 +222,13 @@ async def lifespan(app: FastAPI):
         logger.info("database_mode_enabled")
 
         # Initialize database connection
-        _database_connection = DatabaseConnection(config.database)
-        await _database_connection.connect()
-        logger.info("database_connected", host=config.database.host, database=config.database.database)
+        try:
+            _database_connection = DatabaseConnection(config.database)
+            await _database_connection.connect()
+            logger.info("database_connected", host=config.database.host, database=config.database.database)
+        except Exception as e:
+            logger.error("database_startup_failed", error=str(e), error_type=type(e).__name__)
+            raise RuntimeError(f"Database startup failed: {e}") from e
 
         # Create repository
         _repository = ConfigRepository(_database_connection)

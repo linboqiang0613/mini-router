@@ -3,6 +3,7 @@
 
 import json
 import structlog
+from typing import Any
 
 from mini_router.database.connection import DatabaseConnection
 
@@ -22,7 +23,7 @@ class ConfigRepository:
 
     # === Global Config Operations ===
 
-    async def get_global_config(self) -> dict[str, any] | None:
+    async def get_global_config(self) -> dict[str, Any] | None:
         """Get global router configuration.
 
         Returns:
@@ -33,14 +34,14 @@ class ConfigRepository:
         )
         return row
 
-    async def save_global_config(self, config_data: dict[str, any]) -> None:
+    async def save_global_config(self, config_data: dict[str, Any]) -> None:
         """Save global router configuration.
 
         Args:
             config_data: Full router config as dict
         """
         await self.db.execute(
-            "UPDATE mini_router_config SET config_data = ?, version = version + 1",
+            "UPDATE mini_router_config SET config_data = %s, version = version + 1",
             (json.dumps(config_data),)
         )
         logger.info("global_config_saved")
@@ -58,7 +59,7 @@ class ConfigRepository:
 
     # === Tenant Operations ===
 
-    async def get_all_tenants(self) -> list[dict[str, any]]:
+    async def get_all_tenants(self) -> list[dict[str, Any]]:
         """Get all enabled tenants.
 
         Returns:
@@ -69,7 +70,7 @@ class ConfigRepository:
         )
         return rows
 
-    async def get_tenant_by_id(self, tenant_id: str) -> dict[str, any] | None:
+    async def get_tenant_by_id(self, tenant_id: str) -> dict[str, Any] | None:
         """Get tenant by tenant_id.
 
         Args:
@@ -79,12 +80,12 @@ class ConfigRepository:
             Tenant dict or None
         """
         row = await self.db.fetch_one(
-            "SELECT * FROM mini_router_tenant WHERE tenant_id = ?",
+            "SELECT * FROM mini_router_tenant WHERE tenant_id = %s",
             (tenant_id,)
         )
         return row
 
-    async def get_tenant_by_apikey(self, apikey: str) -> dict[str, any] | None:
+    async def get_tenant_by_apikey(self, apikey: str) -> dict[str, Any] | None:
         """Get tenant by authentication API key.
 
         Args:
@@ -94,12 +95,12 @@ class ConfigRepository:
             Tenant dict or None
         """
         row = await self.db.fetch_one(
-            "SELECT * FROM mini_router_tenant WHERE apikey = ?",
+            "SELECT * FROM mini_router_tenant WHERE apikey = %s",
             (apikey,)
         )
         return row
 
-    async def create_tenant(self, tenant_data: dict[str, any]) -> None:
+    async def create_tenant(self, tenant_data: dict[str, Any]) -> None:
         """Create a new tenant.
 
         Args:
@@ -111,7 +112,7 @@ class ConfigRepository:
             INSERT INTO mini_router_tenant
             (tenant_id, apikey, name, enabled, base_url_template, timeout,
              apikey_pool_mode, decisions, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
             """,
             (
                 tenant_data["tenant_id"],
@@ -126,7 +127,7 @@ class ConfigRepository:
         )
         logger.info("tenant_created", tenant_id=tenant_data["tenant_id"])
 
-    async def update_tenant(self, tenant_id: str, updates: dict[str, any]) -> None:
+    async def update_tenant(self, tenant_id: str, updates: dict[str, Any]) -> None:
         """Update tenant configuration.
 
         Args:
@@ -140,10 +141,10 @@ class ConfigRepository:
             if key in ("tenant_id", "id", "created_at"):
                 continue  # Skip immutable fields
             if key == "decisions":
-                update_fields.append("decisions = ?")
+                update_fields.append("decisions = %s")
                 params.append(json.dumps(value) if value else None)
             else:
-                update_fields.append(f"{key} = ?")
+                update_fields.append(f"{key} = %s")
                 params.append(value)
 
         if not update_fields:
@@ -153,7 +154,7 @@ class ConfigRepository:
         update_fields.append("version = version + 1")
         params.append(tenant_id)
 
-        sql = f"UPDATE mini_router_tenant SET {', '.join(update_fields)} WHERE tenant_id = ?"
+        sql = "UPDATE mini_router_tenant SET " + ", ".join(update_fields) + " WHERE tenant_id = %s"
         await self.db.execute(sql, tuple(params))
         logger.info("tenant_updated", tenant_id=tenant_id)
 
@@ -164,12 +165,12 @@ class ConfigRepository:
             tenant_id: Tenant identifier
         """
         await self.db.execute(
-            "DELETE FROM mini_router_tenant WHERE tenant_id = ?",
+            "DELETE FROM mini_router_tenant WHERE tenant_id = %s",
             (tenant_id,)
         )
         # Also delete API key pool entries
         await self.db.execute(
-            "DELETE FROM mini_router_apikey_pool WHERE tenant_id = ?",
+            "DELETE FROM mini_router_apikey_pool WHERE tenant_id = %s",
             (tenant_id,)
         )
         logger.info("tenant_deleted", tenant_id=tenant_id)
@@ -187,7 +188,7 @@ class ConfigRepository:
 
     # === API Key Pool Operations ===
 
-    async def get_apikey_pool(self, tenant_id: str) -> list[dict[str, any]]:
+    async def get_apikey_pool(self, tenant_id: str) -> list[dict[str, Any]]:
         """Get API key pool for tenant.
 
         Args:
@@ -199,7 +200,7 @@ class ConfigRepository:
         rows = await self.db.fetch_all(
             """
             SELECT * FROM mini_router_apikey_pool
-            WHERE tenant_id = ?
+            WHERE tenant_id = %s
             ORDER BY apikey_order
             """,
             (tenant_id,)
@@ -223,7 +224,7 @@ class ConfigRepository:
             """
             INSERT INTO mini_router_apikey_pool
             (tenant_id, apikey, apikey_order, is_active)
-            VALUES (?, ?, ?, TRUE)
+            VALUES (%s, %s, %s, TRUE)
             """,
             (tenant_id, apikey, order)
         )
@@ -245,8 +246,8 @@ class ConfigRepository:
         await self.db.execute(
             """
             UPDATE mini_router_apikey_pool
-            SET is_active = ?
-            WHERE tenant_id = ? AND apikey_order = ?
+            SET is_active = %s
+            WHERE tenant_id = %s AND apikey_order = %s
             """,
             (is_active, tenant_id, order)
         )
