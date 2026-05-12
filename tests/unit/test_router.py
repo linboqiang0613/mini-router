@@ -318,3 +318,16 @@ class TestRouterReloadConfig:
 
         # Should not crash, config unchanged
         assert router.config == config
+
+    @pytest.mark.asyncio
+    async def test_reload_config_handles_exception(self, mock_repo):
+        """Test reload_config handles exception gracefully."""
+        mock_repo.get_global_config = AsyncMock(side_effect=Exception("DB error"))
+
+        config = RouterConfig()
+        router = Router(config, repository=mock_repo)
+
+        await router.reload_config()
+
+        # Should not crash, config unchanged
+        assert router.config == config
