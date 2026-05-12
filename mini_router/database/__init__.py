@@ -2,14 +2,10 @@
 """Database module for mini-router."""
 
 from mini_router.database.config import DatabaseConfig, get_database_config
-
-# TODO: Uncomment when DatabaseConnection and ConfigRepository are implemented
-# from mini_router.database.connection import DatabaseConnection
-# from mini_router.database.repository import ConfigRepository
+from mini_router.database.connection import DatabaseConnection
 
 __all__ = [
     "DatabaseConfig",
     "get_database_config",
-    # "DatabaseConnection",
-    # "ConfigRepository",
+    "DatabaseConnection",
 ]
