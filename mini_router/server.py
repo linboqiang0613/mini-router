@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from mini_router.config.config import RouterConfig
+from mini_router.config.loader import load_config
+from mini_router.database import ConfigRepository, ConfigSyncService, DatabaseConnection
 from mini_router.proxy import ChatProxy, ChatRequest
 from mini_router.proxy.chat_proxy import AuthenticationError, TenantDisabledError
 from mini_router.router.router import Router, RoutingRequest
@@ -104,6 +106,11 @@ _router: Router | None = None
 _config: RouterConfig | None = None
 _chat_proxy: ChatProxy | None = None
 _tenant_manager: TenantManager | None = None
+
+# Database components
+_database_connection: DatabaseConnection | None = None
+_repository: ConfigRepository | None = None
+_sync_service: ConfigSyncService | None = None
 
 
 def get_router() -> Router:
@@ -203,11 +210,66 @@ def create_default_config() -> RouterConfig:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    # Startup
-    router = get_router()
-    logger.info("router_initialized", decisions=len(router.config.decisions))
+    global _config, _router, _tenant_manager, _chat_proxy
+    global _database_connection, _repository, _sync_service
+
+    # Load config from environment-specific file
+    config = load_config()
+    _config = config
+
+    # Initialize database if enabled
+    if config.database and config.database.enabled:
+        logger.info("database_mode_enabled")
+
+        # Initialize database connection
+        _database_connection = DatabaseConnection(config.database)
+        await _database_connection.connect()
+        logger.info("database_connected", host=config.database.host, database=config.database.database)
+
+        # Create repository
+        _repository = ConfigRepository(_database_connection)
+
+        # Initialize TenantManager with repository
+        _tenant_manager = TenantManager(repository=_repository)
+        await _tenant_manager.async_load()
+        logger.info("tenant_manager_initialized", tenants=len(_tenant_manager.list_all()))
+
+        # Initialize Router with repository
+        _router = Router(config, repository=_repository)
+        logger.info("router_initialized", decisions=len(config.decisions), mode="database")
+
+        # Start sync service
+        _sync_service = ConfigSyncService(
+            repository=_repository,
+            tenant_manager=_tenant_manager,
+            router=_router,
+        )
+        await _sync_service.start()
+        logger.info("sync_service_started")
+    else:
+        # YAML mode (existing behavior)
+        logger.info("yaml_mode_enabled")
+
+        _tenant_manager = TenantManager()
+        _tenant_manager.load()
+        logger.info("tenant_manager_initialized", tenants=len(_tenant_manager.list_all()))
+
+        _router = Router(config)
+        logger.info("router_initialized", decisions=len(config.decisions), mode="yaml")
+
     yield
+
     # Shutdown
+    logger.info("shutdown_started")
+
+    if _sync_service:
+        await _sync_service.stop()
+        logger.info("sync_service_stopped")
+
+    if _database_connection:
+        await _database_connection.close()
+        logger.info("database_connection_closed")
+
     logger.info("router_shutdown")
 
 
