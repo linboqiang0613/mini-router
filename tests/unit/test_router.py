@@ -1,6 +1,7 @@
 """Tests for main router."""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from mini_router.config.config import (
     Decision,
@@ -264,3 +265,56 @@ class TestRouterTenantDecisions:
         assert result.selected_model is None
         assert result.decision_name is None
         assert result.confidence == 0.0
+
+
+class TestRouterReloadConfig:
+    """Test Router.reload_config method."""
+
+    @pytest.fixture
+    def mock_repo(self):
+        """Create mock repository."""
+        repo = MagicMock()
+        repo.get_global_config = AsyncMock(return_value={
+            "config_data": {
+                "server": {"host": "0.0.0.0", "port": 8080},
+                "models": {"base_url": "https://api.new.com"},
+                "decisions": [],
+            },
+            "version": 10,
+        })
+        return repo
+
+    @pytest.mark.asyncio
+    async def test_reload_config_updates_config(self, mock_repo):
+        """Test reload_config updates Router.config."""
+        old_config = RouterConfig()
+        router = Router(old_config, repository=mock_repo)
+
+        await router.reload_config()
+
+        assert router.config.models.base_url == "https://api.new.com"
+        mock_repo.get_global_config.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reload_config_without_repository_logs_warning(self):
+        """Test reload_config logs warning when no repository."""
+        config = RouterConfig()
+        router = Router(config, repository=None)
+
+        await router.reload_config()
+
+        # Should not raise, just log warning
+        assert router.config == config  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_reload_config_when_config_not_found(self, mock_repo):
+        """Test reload_config when database returns None."""
+        mock_repo.get_global_config = AsyncMock(return_value=None)
+
+        config = RouterConfig()
+        router = Router(config, repository=mock_repo)
+
+        await router.reload_config()
+
+        # Should not crash, config unchanged
+        assert router.config == config
