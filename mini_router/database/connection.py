@@ -6,7 +6,7 @@ Reference: CoPaw database/connection.py (with TDSQL aliases removed, structlog u
 """
 
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 import structlog
 
@@ -90,7 +90,7 @@ class DatabaseConnection:
             logger.info("database_pool_closed")
 
     @asynccontextmanager
-    async def acquire(self):
+    async def acquire(self) -> AsyncIterator[Any]:
         """Acquire a connection from the pool.
 
         Yields:
@@ -104,7 +104,7 @@ class DatabaseConnection:
     async def execute(
         self,
         query: str,
-        params: Optional[tuple] = None,
+        params: Optional[tuple[Any, ...]] = None,
     ) -> int:
         """Execute a query and return affected rows.
 
@@ -118,12 +118,12 @@ class DatabaseConnection:
         async with self.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(query, params)
-                return cur.rowcount
+                return int(cur.rowcount)
 
     async def execute_many(
         self,
         query: str,
-        params_list: list[tuple],
+        params_list: list[tuple[Any, ...]],
     ) -> int:
         """Execute a query multiple times with different parameters.
 
@@ -139,13 +139,13 @@ class DatabaseConnection:
         async with self.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.executemany(query, params_list)
-                return cur.rowcount
+                return int(cur.rowcount)
 
     async def fetch_one(
         self,
         query: str,
-        params: Optional[tuple] = None,
-    ) -> Optional[dict]:
+        params: Optional[tuple[Any, ...]] = None,
+    ) -> Optional[dict[str, Any]]:
         """Fetch a single row.
 
         Args:
@@ -164,8 +164,8 @@ class DatabaseConnection:
     async def fetch_all(
         self,
         query: str,
-        params: Optional[tuple] = None,
-    ) -> list[dict]:
+        params: Optional[tuple[Any, ...]] = None,
+    ) -> list[dict[str, Any]]:
         """Fetch all rows.
 
         Args:

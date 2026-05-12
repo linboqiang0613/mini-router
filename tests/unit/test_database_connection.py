@@ -109,3 +109,152 @@ class TestDatabaseConnection:
 
         result = await conn.execute("UPDATE test SET x = ?", ("value",))
         assert result == 5
+
+    @pytest.mark.asyncio
+    async def test_execute_many_returns_rowcount(self):
+        """Test execute_many returns affected rows."""
+        config = DatabaseConfig()
+        conn = DatabaseConnection(config)
+
+        # Create proper async context manager mocks
+        mock_cursor = AsyncMock()
+        mock_cursor.rowcount = 3
+        mock_cursor.__aenter__ = AsyncMock(return_value=mock_cursor)
+        mock_cursor.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock()))
+
+        conn._pool = mock_pool
+        conn._connected = True
+
+        result = await conn.execute_many(
+            "INSERT INTO test (x) VALUES (?)",
+            [("value1",), ("value2",), ("value3",)]
+        )
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_execute_many_empty_params_returns_zero(self):
+        """Test execute_many returns 0 for empty params list."""
+        config = DatabaseConfig()
+        conn = DatabaseConnection(config)
+
+        result = await conn.execute_many("INSERT INTO test (x) VALUES (?)", [])
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_one_returns_dict(self):
+        """Test fetch_one returns dict when row found."""
+        config = DatabaseConfig()
+        conn = DatabaseConnection(config)
+
+        # Create proper async context manager mocks
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value={"id": 1, "name": "test"})
+        mock_cursor.__aenter__ = AsyncMock(return_value=mock_cursor)
+        mock_cursor.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock()))
+
+        conn._pool = mock_pool
+        conn._connected = True
+
+        result = await conn.fetch_one("SELECT * FROM test WHERE id = ?", (1,))
+        assert result == {"id": 1, "name": "test"}
+
+    @pytest.mark.asyncio
+    async def test_fetch_one_returns_none_when_no_row(self):
+        """Test fetch_one returns None when no row found."""
+        config = DatabaseConfig()
+        conn = DatabaseConnection(config)
+
+        # Create proper async context manager mocks
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=None)
+        mock_cursor.__aenter__ = AsyncMock(return_value=mock_cursor)
+        mock_cursor.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock()))
+
+        conn._pool = mock_pool
+        conn._connected = True
+
+        result = await conn.fetch_one("SELECT * FROM test WHERE id = ?", (999,))
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_returns_list_of_dicts(self):
+        """Test fetch_all returns list of dicts."""
+        config = DatabaseConfig()
+        conn = DatabaseConnection(config)
+
+        # Create proper async context manager mocks
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[
+            {"id": 1, "name": "test1"},
+            {"id": 2, "name": "test2"},
+        ])
+        mock_cursor.__aenter__ = AsyncMock(return_value=mock_cursor)
+        mock_cursor.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock()))
+
+        conn._pool = mock_pool
+        conn._connected = True
+
+        result = await conn.fetch_all("SELECT * FROM test")
+        assert result == [
+            {"id": 1, "name": "test1"},
+            {"id": 2, "name": "test2"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_returns_empty_list_when_no_rows(self):
+        """Test fetch_all returns empty list when no rows found."""
+        config = DatabaseConfig()
+        conn = DatabaseConnection(config)
+
+        # Create proper async context manager mocks
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=None)
+        mock_cursor.__aenter__ = AsyncMock(return_value=mock_cursor)
+        mock_cursor.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cursor)
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_conn), __aexit__=AsyncMock()))
+
+        conn._pool = mock_pool
+        conn._connected = True
+
+        result = await conn.fetch_all("SELECT * FROM test WHERE id = ?", (999,))
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_acquire_raises_runtime_error_when_not_connected(self):
+        """Test acquire raises RuntimeError when pool is not connected."""
+        config = DatabaseConfig()
+        conn = DatabaseConnection(config)
+        # conn._pool is None by default, so not connected
+
+        with pytest.raises(RuntimeError, match="Database not connected"):
+            async with conn.acquire():
+                pass
