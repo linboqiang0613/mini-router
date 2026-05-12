@@ -1,0 +1,61 @@
+# Mini-Router 生产环境配置
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+# 数据库配置（生产环境启用）
+database:
+  enabled: true
+  host: "mysql.prod.internal"  # 替换为实际生产数据库地址
+  port: 3306
+  user: "mini_router"
+  database: "mini_router"
+  min_connections: 5
+  max_connections: 20
+
+models:
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  api_key: ""  # 通过环境变量传入
+  tokenizer_path: "/app/models/Qwen3-tokenizer"
+  timeout: 120.0
+
+  classifier:
+    intent:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: null
+    pii:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: "detected"
+    security:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: "detected"
+    complexity:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: "complex"
+    context_length:
+      enabled: true
+      timeout: 5.0
+      fallback_label: "short"
+      threshold: 10000
+
+signals:
+  keyword_rules: []
+
+decisions: []
+
+selection:
+  strategy: "latency_aware"
+
+cache:
+  enabled: true
+  similarity_threshold: 0.95
+  max_entries: 10000

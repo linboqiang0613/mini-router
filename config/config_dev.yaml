@@ -1,0 +1,79 @@
+# Mini-Router 开发环境配置
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+# 数据库配置（开发环境可禁用）
+database:
+  enabled: false
+  host: "localhost"
+  port: 3306
+  user: "root"
+  database: "mini_router_dev"
+  min_connections: 2
+  max_connections: 5
+
+models:
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  api_key: ""  # 通过环境变量传入
+  tokenizer_path: "~/models/Qwen3-tokenizer"
+  timeout: 120.0
+
+  classifier:
+    intent:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: null
+    pii:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: "detected"
+    security:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: "detected"
+    complexity:
+      model: "qwen3.5-plus"
+      enabled: true
+      timeout: 50.0
+      fallback_label: "complex"
+    context_length:
+      enabled: true
+      timeout: 5.0
+      fallback_label: "short"
+      threshold: 10000
+
+signals:
+  keyword_rules:
+    - name: "code_related"
+      keywords: ["code", "programming", "function", "debug", "error"]
+      operator: "any"
+      case_sensitive: false
+
+decisions:
+  - name: "default_route"
+    priority: 0
+    rules:
+      type: "or"
+      children:
+        - type: "signal"
+          signal: "complexity"
+          condition: "simple"
+        - type: "signal"
+          signal: "complexity"
+          condition: "complex"
+    model_refs:
+      - model: "qwen3.5-plus"
+        weight: 1.0
+
+selection:
+  strategy: "latency_aware"
+
+cache:
+  enabled: true
+  similarity_threshold: 0.95
+  max_entries: 10000
