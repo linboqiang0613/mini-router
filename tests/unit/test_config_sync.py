@@ -64,7 +64,7 @@ class TestConfigSyncService:
     async def test_poll_global_version_change(self, mock_components):
         """Test global config poll detects version change."""
         repo, tm, router = mock_components
-        repo.get_global_version = AsyncMock(side_effect=[2, 2, 2])
+        repo.get_global_version = AsyncMock(side_effect=[2, 2])
 
         sync = ConfigSyncService(
             repository=repo,
@@ -109,7 +109,7 @@ class TestConfigSyncService:
     async def test_poll_tenant_version_change(self, mock_components):
         """Test tenant config poll detects version change."""
         repo, tm, router = mock_components
-        repo.get_tenant_max_version = AsyncMock(side_effect=[15, 15, 15])
+        repo.get_tenant_max_version = AsyncMock(side_effect=[15, 15])
 
         sync = ConfigSyncService(
             repository=repo,
