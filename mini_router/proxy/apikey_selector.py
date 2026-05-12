@@ -73,3 +73,35 @@ class ApiKeyPoolSelector:
             The current index in the pool
         """
         return self._indices.get(tenant_id, 0)
+
+    def get_first_apikey(self, tenant: "TenantConfig") -> str:
+        """Get the first API key from the pool (for fallback mode).
+
+        Does not modify the round-robin index. If pool is empty,
+        falls back to the tenant's management apikey.
+
+        Args:
+            tenant: The tenant configuration with apikey_pool
+
+        Returns:
+            The first API key for calling LLM services
+        """
+        if not tenant.apikey_pool:
+            return tenant.apikey
+        return tenant.apikey_pool[0]
+
+    def get_apikey_at(self, tenant: "TenantConfig", index: int) -> str | None:
+        """Get API key at specific index from the pool.
+
+        Args:
+            tenant: The tenant configuration with apikey_pool
+            index: The index in the pool
+
+        Returns:
+            The API key at the index, or None if index is out of bounds
+        """
+        if not tenant.apikey_pool:
+            return tenant.apikey if index == 0 else None
+        if 0 <= index < len(tenant.apikey_pool):
+            return tenant.apikey_pool[index]
+        return None

@@ -1,11 +1,14 @@
 """Chat proxy service - routes and forwards chat requests."""
 
+import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 import structlog
 
 from mini_router.proxy.apikey_selector import ApiKeyPoolSelector
+from mini_router.proxy.strategies import ApiKeyStrategy, create_apikey_strategy
 from mini_router.proxy.types import (
     ChatChoice,
     ChatChoiceDelta,
@@ -100,16 +103,113 @@ class ChatProxy:
 
         return tenant
 
+    def _get_apikey_pool(self, tenant: TenantConfig) -> list[str]:
+        """Get the API key pool for a tenant.
+
+        Returns the pool if available, otherwise returns a single-item list
+        with the management apikey.
+
+        Args:
+            tenant: The tenant configuration
+
+        Returns:
+            List of API keys to try
+        """
+        if tenant.apikey_pool:
+            return tenant.apikey_pool
+        return [tenant.apikey]
+
+    def _process_stream_chunk(
+        self, chunk: dict[str, Any], selected_model: str
+    ) -> ChatChunk:
+        """Process a streaming chunk into ChatChunk format.
+
+        Args:
+            chunk: Raw chunk from API
+            selected_model: Model name
+
+        Returns:
+            Formatted ChatChunk
+        """
+        choices = chunk.get("choices", [])
+        chat_choices = []
+
+        for choice in choices:
+            delta = choice.get("delta", {})
+            chat_choices.append(
+                ChatChoice(
+                    index=choice.get("index", 0),
+                    delta=ChatChoiceDelta(
+                        role=delta.get("role"),
+                        content=delta.get("content") if delta.get("content") else None,
+                        tool_calls=delta.get("tool_calls"),
+                    ),
+                    finish_reason=choice.get("finish_reason"),
+                )
+            )
+
+        return ChatChunk(
+            id=chunk.get("id", f"chatcmpl-{selected_model}"),
+            model=selected_model,
+            choices=chat_choices,
+        )
+
+    async def _record_stream_latency(
+        self,
+        start_time: float,
+        first_token_time: float | None,
+        token_count: int,
+        model: str,
+        tenant_id: str | None,
+        decision_name: str | None,
+    ) -> None:
+        """Record streaming latency metrics.
+
+        Args:
+            start_time: Request start time
+            first_token_time: First token arrival time
+            token_count: Number of tokens generated
+            model: Model name
+            tenant_id: Tenant ID (for logging)
+            decision_name: Decision name (for logging)
+        """
+        end_time = time.time()
+        total_latency = end_time - start_time
+        ttft = first_token_time - start_time if first_token_time else None
+        tpot = None
+        if token_count > 0 and first_token_time:
+            tpot = (end_time - first_token_time) / token_count
+
+        await self.router.record_latency(
+            model=model,
+            latency_seconds=total_latency,
+            tpot=tpot,
+            ttft=ttft,
+        )
+
+        logger.info(
+            "chat_proxy_stream_completed",
+            model=model,
+            decision=decision_name,
+            tenant_id=tenant_id,
+            latency=total_latency,
+            ttft=ttft,
+            tpot=tpot,
+            tokens=token_count,
+        )
+
     async def chat_stream(
         self,
         request: ChatRequest,
         tenant: TenantConfig | None = None,
+        strategy: ApiKeyStrategy | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Process a streaming chat request.
 
         Args:
             request: The chat request to process
             tenant: Optional tenant configuration for tenant-specific routing
+            strategy: Optional API key selection strategy. If None, uses tenant config.
 
         Yields ChatChunk objects for SSE streaming.
 
@@ -120,8 +220,6 @@ class ChatProxy:
         4. Stream response back
         5. Record latency automatically
         """
-        import time
-
         # Extract query from last user message
         query = self._extract_query(request.messages)
 
@@ -163,7 +261,6 @@ class ChatProxy:
         start_time = time.time()
         first_token_time: float | None = None
         token_count = 0
-        total_content = ""
 
         try:
             # Build kwargs for API call
@@ -187,84 +284,95 @@ class ChatProxy:
             if request.tool_choice is not None:
                 kwargs["tool_choice"] = request.tool_choice
 
-            # Stream from selected model
             messages = [msg.model_dump() for msg in request.messages]
 
             # Build base_url from tenant template or use default
             base_url = None
-            api_key = None
             if tenant:
                 base_url = build_base_url(tenant.base_url_template, selected_model)
-                api_key = await self.apikey_selector.get_next_apikey(tenant)
 
-            async for chunk in self.client.chat_completion_stream(
-                model=selected_model,
-                messages=messages,
-                base_url=base_url,
-                api_key=api_key,
-                **kwargs,
-            ):
-                # Record first token time
-                if first_token_time is None:
-                    first_token_time = time.time()
-
-                # Extract content from chunk
-                choices = chunk.get("choices", [])
-                chat_choices = []
-
-                for choice in choices:
-                    delta = choice.get("delta", {})
-                    content = delta.get("content", "")
-                    if content:
-                        total_content += content
-                        token_count += 1
-
-                    chat_choices.append(
-                        ChatChoice(
-                            index=choice.get("index", 0),
-                            delta=ChatChoiceDelta(
-                                role=delta.get("role"),
-                                content=content if content else None,
-                                tool_calls=delta.get("tool_calls"),
-                            ),
-                            finish_reason=choice.get("finish_reason"),
-                        )
+            # Get strategy and pool
+            if tenant:
+                if strategy is None:
+                    strategy = create_apikey_strategy(
+                        tenant.apikey_pool_mode, self.apikey_selector
                     )
+                pool = self._get_apikey_pool(tenant)
 
-                yield ChatChunk(
-                    id=chunk.get("id", f"chatcmpl-{selected_model}"),
+                # Unified key selection via strategy
+                current_key = await strategy.select_key(pool, tenant.tenant_id)
+
+                # Unified streaming with strategy-based retry
+                while current_key:
+                    try:
+                        async for chunk in self.client.chat_completion_stream(
+                            model=selected_model,
+                            messages=messages,
+                            base_url=base_url,
+                            api_key=current_key,
+                            **kwargs,
+                        ):
+                            if first_token_time is None:
+                                first_token_time = time.time()
+
+                            # Count tokens
+                            choices = chunk.get("choices", [])
+                            for choice in choices:
+                                delta = choice.get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    token_count += 1
+
+                            yield self._process_stream_chunk(chunk, selected_model)
+
+                        # Success - record latency and exit
+                        await self._record_stream_latency(
+                            start_time,
+                            first_token_time,
+                            token_count,
+                            selected_model,
+                            tenant.tenant_id,
+                            decision_name,
+                        )
+                        return
+
+                    except Exception as e:
+                        next_key = strategy.next_key_on_error(pool, current_key, e)
+                        if next_key is None:
+                            raise  # No retry
+                        current_key = next_key
+                        # Reset timing for retry
+                        first_token_time = None
+                        token_count = 0
+            else:
+                # No tenant - direct stream without strategy
+                async for chunk in self.client.chat_completion_stream(
                     model=selected_model,
-                    choices=chat_choices,
+                    messages=messages,
+                    base_url=base_url,
+                    api_key=None,
+                    **kwargs,
+                ):
+                    if first_token_time is None:
+                        first_token_time = time.time()
+
+                    choices = chunk.get("choices", [])
+                    for choice in choices:
+                        delta = choice.get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            token_count += 1
+
+                    yield self._process_stream_chunk(chunk, selected_model)
+
+                await self._record_stream_latency(
+                    start_time,
+                    first_token_time,
+                    token_count,
+                    selected_model,
+                    None,
+                    decision_name,
                 )
-
-            # Calculate and record latency
-            end_time = time.time()
-            total_latency = end_time - start_time
-            ttft = first_token_time - start_time if first_token_time else None
-
-            # Calculate TPOT (Time Per Output Token)
-            tpot = None
-            if token_count > 0 and first_token_time:
-                tpot = (end_time - first_token_time) / token_count
-
-            # Record latency
-            await self.router.record_latency(
-                model=selected_model,
-                latency_seconds=total_latency,
-                tpot=tpot,
-                ttft=ttft,
-            )
-
-            logger.info(
-                "chat_proxy_stream_completed",
-                model=selected_model,
-                decision=decision_name,
-                tenant_id=tenant.tenant_id if tenant else None,
-                latency=total_latency,
-                ttft=ttft,
-                tpot=tpot,
-                tokens=token_count,
-            )
 
         except Exception as e:
             logger.error(
@@ -274,7 +382,6 @@ class ChatProxy:
                 error=str(e),
                 error_type=type(e).__name__,
             )
-            # Yield error chunk
             yield ChatChunk(
                 model=selected_model or "unknown",
                 choices=[
@@ -292,17 +399,17 @@ class ChatProxy:
         self,
         request: ChatRequest,
         tenant: TenantConfig | None = None,
+        strategy: ApiKeyStrategy | None = None,
     ) -> ChatResponse:
         """Process a non-streaming chat request.
 
         Args:
             request: The chat request to process
             tenant: Optional tenant configuration for tenant-specific routing
+            strategy: Optional API key selection strategy. If None, uses tenant config.
 
         Returns a complete ChatResponse.
         """
-        import time
-
         # Extract query from last user message
         query = self._extract_query(request.messages)
 
@@ -311,7 +418,6 @@ class ChatProxy:
             selected_model = request.model
             decision_name = None
         else:
-            # Use tenant decisions if provided
             decisions = tenant.decisions if tenant else None
             routing_result = await self.router.route(
                 RoutingRequest(
@@ -338,7 +444,6 @@ class ChatProxy:
                     ],
                 )
 
-        # Record timing
         start_time = time.time()
 
         try:
@@ -363,38 +468,62 @@ class ChatProxy:
             if request.tool_choice is not None:
                 kwargs["tool_choice"] = request.tool_choice
 
-            # Call API (non-streaming)
             messages = [msg.model_dump() for msg in request.messages]
 
-            # Build base_url from tenant template or use default
             base_url = None
-            api_key = None
             if tenant:
                 base_url = build_base_url(tenant.base_url_template, selected_model)
-                api_key = await self.apikey_selector.get_next_apikey(tenant)
 
-            response = await self.client.chat_completion(
-                model=selected_model,
-                messages=messages,
-                base_url=base_url,
-                api_key=api_key,
-                **kwargs,
-            )
+            # Get strategy and pool
+            response = None
+            if tenant:
+                if strategy is None:
+                    strategy = create_apikey_strategy(
+                        tenant.apikey_pool_mode, self.apikey_selector
+                    )
+                pool = self._get_apikey_pool(tenant)
 
-            # Calculate and record latency
+                # Unified key selection via strategy
+                current_key = await strategy.select_key(pool, tenant.tenant_id)
+
+                # Unified call with strategy-based retry
+                while current_key:
+                    try:
+                        response = await self.client.chat_completion(
+                            model=selected_model,
+                            messages=messages,
+                            base_url=base_url,
+                            api_key=current_key,
+                            **kwargs,
+                        )
+                        break  # Success
+                    except Exception as e:
+                        next_key = strategy.next_key_on_error(pool, current_key, e)
+                        if next_key is None:
+                            raise
+                        current_key = next_key
+            else:
+                # No tenant - direct call
+                response = await self.client.chat_completion(
+                    model=selected_model,
+                    messages=messages,
+                    base_url=base_url,
+                    api_key=None,
+                    **kwargs,
+                )
+
+            # Record latency
             end_time = time.time()
             total_latency = end_time - start_time
 
-            # Extract usage
             usage = None
-            if "usage" in response:
+            if response and "usage" in response:
                 usage = ChatUsage(
                     prompt_tokens=response["usage"].get("prompt_tokens", 0),
                     completion_tokens=response["usage"].get("completion_tokens", 0),
                     total_tokens=response["usage"].get("total_tokens", 0),
                 )
 
-            # Record latency
             await self.router.record_latency(
                 model=selected_model,
                 latency_seconds=total_latency,
@@ -402,19 +531,20 @@ class ChatProxy:
 
             # Build response
             choices = []
-            for choice in response.get("choices", []):
-                message = choice.get("message", {})
-                choices.append(
-                    ChatChoice(
-                        index=choice.get("index", 0),
-                        message=ChatMessage(
-                            role=message.get("role", "assistant"),
-                            content=message.get("content"),
-                            tool_calls=message.get("tool_calls"),
-                        ),
-                        finish_reason=choice.get("finish_reason"),
+            if response:
+                for choice in response.get("choices", []):
+                    message = choice.get("message", {})
+                    choices.append(
+                        ChatChoice(
+                            index=choice.get("index", 0),
+                            message=ChatMessage(
+                                role=message.get("role", "assistant"),
+                                content=message.get("content"),
+                                tool_calls=message.get("tool_calls"),
+                            ),
+                            finish_reason=choice.get("finish_reason"),
+                        )
                     )
-                )
 
             logger.info(
                 "chat_proxy_completed",
@@ -426,7 +556,7 @@ class ChatProxy:
             )
 
             return ChatResponse(
-                id=response.get("id", f"chatcmpl-{selected_model}"),
+                id=response.get("id", f"chatcmpl-{selected_model}") if response else f"chatcmpl-{selected_model}",
                 model=selected_model,
                 choices=choices,
                 usage=usage,
@@ -469,20 +599,17 @@ class ChatProxy:
     def _content_to_str(self, content: str | list[dict[str, Any]]) -> str:
         """Convert content to string for routing.
 
-        Supports text and image_url content types per OpenAI API format:
-        - {"type": "text", "text": "..."}
-        - {"type": "image_url", "image_url": {"url": "..."}}
+        Supports text and image_url content types per OpenAI API format.
 
         Args:
             content: Either a string or array of content blocks.
 
         Returns:
-            String representation of content (text parts only, images are noted).
+            String representation of content.
         """
         if isinstance(content, str):
             return content
 
-        # Array format: extract text from type="text" blocks
         text_parts = []
         has_image = False
         for block in content:
@@ -492,7 +619,6 @@ class ChatProxy:
             elif block_type == "image_url":
                 has_image = True
 
-        # Append image marker if images are present
         if has_image:
             text_parts.append("[图片]")
 

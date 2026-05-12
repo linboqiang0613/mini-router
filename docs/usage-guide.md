@@ -492,11 +492,109 @@ curl -X DELETE http://localhost:8080/v1/tenants/tenant-001
 |------|------|
 | `tenant_id` | 租户唯一标识 |
 | `apikey` | 租户 API Key（用于认证） |
+| `apikey_pool` | API Key 池（用于调用 LLM 服务） |
+| `apikey_pool_mode` | API Key 池选择模式：`round_robin`（轮询）或 `fallback`（429降级） |
 | `name` | 租户名称 |
 | `enabled` | 是否启用 |
 | `base_url_template` | 上游 API URL 模板（支持 `{model}` 占位符） |
 | `timeout` | 请求超时时间 |
 | `decisions` | 租户专属路由规则 |
+
+### 5.4 API Key 池配置
+
+租户可以配置一个 API Key 池，用于调用上游 LLM 服务。支持两种选择模式：
+
+#### Round-Robin 模式（默认）
+
+每次请求轮询切换 Key：
+
+```yaml
+tenants:
+  - tenant_id: "tenant-001"
+    apikey: "sk-auth-key"          # 认证 Key
+    apikey_pool:                   # 调用 LLM 的 Key 池
+      - "sk-llm-key-1"
+      - "sk-llm-key-2"
+      - "sk-llm-key-3"
+    apikey_pool_mode: "round_robin"  # 默认值，可省略
+```
+
+请求序列：Key1 → Key2 → Key3 → Key1 → Key2 → ...
+
+#### Fallback 模式（429 降级）
+
+优先使用第一个 Key，遇到 429 限流时自动切换下一个：
+
+```yaml
+tenants:
+  - tenant_id: "tenant-002"
+    apikey: "sk-auth-key"
+    apikey_pool:
+      - "sk-llm-key-1"
+      - "sk-llm-key-2"
+      - "sk-llm-key-3"
+    apikey_pool_mode: "fallback"
+```
+
+行为：
+- 请求优先使用 Key1
+- Key1 返回 429 时，自动切换 Key2
+- Key2 返回 429 时，自动切换 Key3
+- 所有 Key 都返回 429 时，返回 429 错误（不循环重试）
+- 下次请求重新从 Key1 开始（不记录冷却状态）
+
+**注意**：
+- 只对 HTTP 429 错误触发降级，其他错误直接返回
+- 流式请求只在开始时检测 429，中途失败不降级
+- 空 `apikey_pool` 时使用 `apikey` 字段作为单一 Key
+
+### 5.5 API Key 选择策略（高级用法）
+
+Mini-Router 使用策略模式实现 API Key 选择逻辑，支持通过参数传入自定义策略。
+
+#### 策略接口
+
+```python
+from mini_router.proxy.strategies import ApiKeyStrategy
+
+class CustomStrategy(ApiKeyStrategy):
+    async def select_key(self, pool: list[str], tenant_id: str) -> str:
+        """选择 API Key（异步方法，支持状态管理）"""
+        ...
+
+    def next_key_on_error(self, pool: list[str], current_key: str, error: Exception) -> str | None:
+        """错误后返回下一个 Key，或 None 停止重试"""
+        ...
+```
+
+**关键变更：**
+- `select_key()` 现在是 **异步方法** (`async def`)，支持有状态策略（如轮询）
+- 新增 `tenant_id` 参数，用于策略维护状态（轮询模式需要）
+- 策略统一负责 Key 选择，ChatProxy 不再有分支逻辑
+
+#### 使用自定义策略
+
+```python
+from mini_router.proxy.strategies import FallbackStrategy
+from mini_router.proxy.chat_proxy import ChatProxy
+
+# 创建自定义策略
+strategy = FallbackStrategy()
+
+# 调用时传入策略（策略会统一处理 Key 选择）
+response = await proxy.chat(request, tenant=tenant, strategy=strategy)
+```
+
+#### 内置策略
+
+| 策略 | select_key 行为 | next_key_on_error 行为 |
+|------|----------------|----------------------|
+| `RoundRobinStrategy` | 使用 `ApiKeyPoolSelector` 维护轮询状态，每次调用返回下一个 Key | 返回 None（不重试） |
+| `FallbackStrategy` | 返回 `pool[0]`（无状态） | 429 时返回下一个 Key，否则返回 None |
+
+**状态管理说明：**
+- `RoundRobinStrategy` 内部使用 `ApiKeyPoolSelector` 的 `_indices` 字典维护轮询状态
+- `FallbackStrategy` 无需状态管理，每次都从第一个 Key 开始
 
 ---
 

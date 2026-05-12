@@ -17,6 +17,10 @@ class TenantConfig(BaseModel):
         default_factory=list,
         description="Pool of API keys for calling LLM services (rotated per request)",
     )
+    apikey_pool_mode: str = Field(
+        "round_robin",
+        description="API key selection mode: 'round_robin' (rotate per request) or 'fallback' (switch on 429)",
+    )
     name: str | None = Field(None, description="Human-readable tenant name")
     enabled: bool = Field(True, description="Whether tenant is enabled")
     base_url_template: str = Field(
@@ -37,6 +41,7 @@ class TenantCreateRequest(BaseModel):
     tenant_id: str
     apikey: str
     apikey_pool: list[str] = Field(default_factory=list)
+    apikey_pool_mode: str = "round_robin"
     name: str | None = None
     enabled: bool = True
     base_url_template: str
@@ -49,6 +54,7 @@ class TenantUpdateRequest(BaseModel):
 
     apikey: str | None = None
     apikey_pool: list[str] | None = None
+    apikey_pool_mode: str | None = None
     name: str | None = None
     enabled: bool | None = None
     base_url_template: str | None = None
@@ -62,6 +68,7 @@ class TenantResponse(BaseModel):
     tenant_id: str
     apikey: str  # Will be masked in response
     apikey_pool_size: int  # Number of keys in pool (not the actual keys)
+    apikey_pool_mode: str  # API key selection mode
     name: str | None
     enabled: bool
     base_url_template: str
@@ -81,6 +88,7 @@ class TenantResponse(BaseModel):
             tenant_id=config.tenant_id,
             apikey=apikey,
             apikey_pool_size=len(config.apikey_pool),
+            apikey_pool_mode=config.apikey_pool_mode,
             name=config.name,
             enabled=config.enabled,
             base_url_template=config.base_url_template,
