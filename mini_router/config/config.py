@@ -2,7 +2,7 @@
 
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -220,6 +220,7 @@ class RouterConfig(BaseModel):
     decisions: list[Decision] = Field(default_factory=list)
     selection: SelectionConfig = Field(default_factory=SelectionConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    database: Optional[Any] = Field(default=None, description="Database configuration (set by loader)")
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RouterConfig":
