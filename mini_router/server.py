@@ -576,20 +576,21 @@ def main():
     parser = argparse.ArgumentParser(description="Mini-Router HTTP Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
-    parser.add_argument("--config", default="config.yaml", help="Path to config file (YAML)")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config file (YAML). Overrides MINI_ROUTER_ENV if specified"
+    )
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     args = parser.parse_args()
 
-    # Load config before starting server
-    global _config
-    config_path = Path(args.config)
-    if config_path.exists():
-        _config = RouterConfig.from_yaml(config_path)
-        logger.info("config_loaded", path=str(config_path), decisions=len(_config.decisions))
-    else:
-        logger.warning("config_not_found", path=str(config_path), using="default")
+    # If --config is specified, override the config path discovery
+    if args.config:
+        os.environ["MINI_ROUTER_CONFIG_PATH"] = args.config
+        logger.info("config_override", path=args.config)
 
-    logger.info("starting_server", host=args.host, port=args.port)
+    config_mode = args.config if args.config else f"MINI_ROUTER_ENV={os.environ.get('MINI_ROUTER_ENV', 'dev')}"
+    logger.info("starting_server", host=args.host, port=args.port, config_mode=config_mode)
 
     # Pass app object directly (not string) to preserve global state
     uvicorn.run(

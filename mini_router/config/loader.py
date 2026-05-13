@@ -23,10 +23,11 @@ logger = structlog.get_logger()
 def get_config_path() -> Path:
     """Get config file path based on environment.
 
-    Environment variable MINI_ROUTER_ENV controls which config file to load:
-    - dev: config/config_dev.yaml
-    - prd: config/config_prd.yaml
-    - default: config/config_dev.yaml
+    Configuration path resolution order:
+    1. MINI_ROUTER_CONFIG_PATH environment variable (explicit override from --config)
+    2. MINI_ROUTER_ENV environment variable (dev/prd → config_dev.yaml/config_prd.yaml)
+    3. config.yaml fallback
+    4. Raise FileNotFoundError if nothing found
 
     Returns:
         Path to config file
@@ -34,6 +35,18 @@ def get_config_path() -> Path:
     Raises:
         FileNotFoundError: If no config file found
     """
+    # Check for explicit override (from --config argument)
+    explicit_path = os.environ.get("MINI_ROUTER_CONFIG_PATH")
+    if explicit_path:
+        path = Path(explicit_path)
+        if path.exists():
+            logger.info("config_path_explicit", path=str(path))
+            return path
+        else:
+            logger.error("config_path_not_found", path=str(path))
+            raise FileNotFoundError(f"Config file not found: {path}")
+
+    # Use environment-based selection
     env = os.environ.get("MINI_ROUTER_ENV", "dev")
     config_file = f"config/config_{env}.yaml"
     path = Path(config_file)
