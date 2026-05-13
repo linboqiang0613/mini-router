@@ -22,7 +22,8 @@ database:
 # 以下配置仅在 database.enabled=false 时生效
 models:
   base_url: "https://coding.dashscope.aliyuncs.com/v1"
-  tokenizer_path: "~/models/Qwen3-tokenizer"
+  tokenizer_path: "/Users/zyn/models/Qwen3-tokenizer"
+  api_key: "sk-sp-f36f31809b824105ac645d1ab9128974"
   timeout: 120.0
 
   classifier:

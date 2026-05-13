@@ -12,12 +12,12 @@ server:
 
 database:
   enabled: true
-  host: "mysql.prod.internal"  # 替换为实际生产数据库地址
+  host: "1.94.232.185"  # 实际测试数据库地址
   port: 3306
-  user: "mini_router"
+  user: "root"
   database: "mini_router"
-  min_connections: 5
-  max_connections: 20
+  min_connections: 2
+  max_connections: 10
 
 # database.enabled=true 时，以下配置从 mini_router_config.config_data 加载
 # YAML 中的配置会被忽略（仅作为初始化数据库时的参考）
