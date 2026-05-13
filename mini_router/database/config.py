@@ -3,7 +3,7 @@
 
 import os
 from typing import Optional
-
+from .tools import decrypt_string
 import structlog
 from pydantic import BaseModel, Field
 
@@ -45,13 +45,7 @@ def get_database_config(
     """
     # Extract password from environment variable
     db_access = os.environ.get("MINI_ROUTER_DB_ACCESS", "")
-
-    # Strip "BEE_" prefix if present - matches CoPaw convention
-    if db_access.startswith("BEE_"):
-        password = db_access[4:]
-        logger.info("database_password_loaded", prefix_removed=True)
-    else:
-        password = db_access
+    password = decrypt_string(db_access)
 
     return DatabaseConfig(
         host=config.host if config else "localhost",
