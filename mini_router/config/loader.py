@@ -1,5 +1,11 @@
 # mini_router/config/loader.py
-"""Configuration loader with environment-based file selection."""
+"""Configuration loader with environment-based file selection.
+
+Design:
+- config_prd.yaml only contains database connection config
+- When database.enabled=true, models/signals/decisions are loaded from mini_router_config table
+- server.py handles the database config loading after connection is established
+"""
 
 import os
 from pathlib import Path
@@ -58,14 +64,15 @@ def get_config_path() -> Path:
 def load_config() -> RouterConfig:
     """Load router configuration from environment-specific file.
 
-    Loads config from file and merges with database configuration
-    from environment variables.
+    This function loads the base configuration from YAML file.
+    When database is enabled, the actual models/signals/decisions config
+    should be loaded from database by server.py after connection.
 
     Returns:
         RouterConfig instance with database field populated
     """
     config_path = get_config_path()
-    logger.info("loading_config", path=str(config_path))
+    logger.info("loading_base_config", path=str(config_path))
 
     # Load YAML config using RouterConfig's method
     router_config = RouterConfig.from_yaml(config_path)
@@ -93,3 +100,28 @@ def load_config() -> RouterConfig:
         logger.info("database_config_default")
 
     return router_config
+
+
+async def load_config_from_db(repository: Any) -> RouterConfig | None:
+    """Load router configuration from database.
+
+    Called by server.py after database connection is established.
+    Reads models/signals/decisions from mini_router_config.config_data.
+
+    Args:
+        repository: ConfigRepository instance
+
+    Returns:
+        RouterConfig from database, or None if database is empty
+    """
+    config_data = await repository.get_global_config()
+    if config_data and config_data.get("config_data"):
+        router_config = RouterConfig.from_dict(config_data["config_data"])
+        logger.info(
+            "config_loaded_from_db",
+            version=config_data.get("version"),
+        )
+        return router_config
+
+    logger.warning("no_config_in_db")
+    return None

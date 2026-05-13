@@ -21,18 +21,29 @@ class ConfigRepository:
         """
         self.db = db
 
+    def _parse_json_field(self, value: Any) -> Any:
+        """Parse JSON field from MySQL (returns string, need to convert to dict/list)."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
+
     # === Global Config Operations ===
 
     async def get_global_config(self) -> dict[str, Any] | None:
         """Get global router configuration.
 
         Returns:
-            Dict with config_data and version, or None if not found
+            Dict with config_data (parsed from JSON) and version, or None if not found
         """
         row = await self.db.fetch_one(
             "SELECT config_data, version FROM mini_router_config LIMIT 1"
         )
-        return row
+        if row:
+            row["config_data"] = self._parse_json_field(row["config_data"])
+            return row
+        return None
 
     async def save_global_config(self, config_data: dict[str, Any]) -> None:
         """Save global router configuration.
@@ -63,11 +74,13 @@ class ConfigRepository:
         """Get all enabled tenants.
 
         Returns:
-            List of tenant dicts
+            List of tenant dicts with decisions parsed from JSON
         """
         rows = await self.db.fetch_all(
             "SELECT * FROM mini_router_tenant WHERE enabled = TRUE"
         )
+        for row in rows:
+            row["decisions"] = self._parse_json_field(row.get("decisions"))
         return rows
 
     async def get_tenant_by_id(self, tenant_id: str) -> dict[str, Any] | None:
@@ -77,12 +90,14 @@ class ConfigRepository:
             tenant_id: Tenant identifier
 
         Returns:
-            Tenant dict or None
+            Tenant dict with decisions parsed, or None
         """
         row = await self.db.fetch_one(
             "SELECT * FROM mini_router_tenant WHERE tenant_id = %s",
             (tenant_id,)
         )
+        if row:
+            row["decisions"] = self._parse_json_field(row.get("decisions"))
         return row
 
     async def get_tenant_by_apikey(self, apikey: str) -> dict[str, Any] | None:
@@ -92,12 +107,14 @@ class ConfigRepository:
             apikey: Authentication API key
 
         Returns:
-            Tenant dict or None
+            Tenant dict with decisions parsed, or None
         """
         row = await self.db.fetch_one(
             "SELECT * FROM mini_router_tenant WHERE apikey = %s",
             (apikey,)
         )
+        if row:
+            row["decisions"] = self._parse_json_field(row.get("decisions"))
         return row
 
     async def create_tenant(self, tenant_data: dict[str, Any]) -> None:

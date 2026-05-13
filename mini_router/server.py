@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from mini_router.config.config import RouterConfig
-from mini_router.config.loader import load_config
+from mini_router.config.loader import load_config, load_config_from_db
 from mini_router.database import ConfigRepository, ConfigSyncService, DatabaseConnection
 from mini_router.proxy import ChatProxy, ChatRequest
 from mini_router.proxy.chat_proxy import AuthenticationError, TenantDisabledError
@@ -232,6 +232,21 @@ async def lifespan(app: FastAPI):
 
         # Create repository
         _repository = ConfigRepository(_database_connection)
+
+        # Load global config from database (models/signals/decisions)
+        db_config = await load_config_from_db(_repository)
+        if db_config:
+            # Use database config, but keep database connection info from YAML
+            db_config.database = config.database
+            config = db_config
+            _config = config
+            logger.info("global_config_loaded_from_db")
+        else:
+            logger.warning(
+                "no_global_config_in_db_using_yaml",
+                message="mini_router_config table is empty, using YAML config as fallback"
+            )
+            # Keep YAML config (with database info already attached)
 
         # Initialize TenantManager with repository
         _tenant_manager = TenantManager(repository=_repository)
