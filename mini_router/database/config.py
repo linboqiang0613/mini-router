@@ -14,9 +14,9 @@ class DatabaseConfig(BaseModel):
     """Database connection configuration.
 
     Supports MySQL-compatible databases.
+    Note: enabled field removed - mode is now controlled by --config parameter.
     """
 
-    enabled: bool = Field(default=False, description="Whether database storage is enabled")
     host: str = Field(default="localhost", description="Database host")
     port: int = Field(default=3306, description="Database port")
     user: str = Field(default="root", description="Database user")
@@ -54,7 +54,6 @@ def get_database_config(
         password = db_access
 
     return DatabaseConfig(
-        enabled=config.enabled if config else False,
         host=config.host if config else "localhost",
         port=config.port if config else 3306,
         user=config.user if config else "root",

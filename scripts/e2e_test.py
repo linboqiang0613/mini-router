@@ -11,6 +11,7 @@
 
 运行方式：
     source .venv/bin/activate
+    export MINI_ROUTER_DB_ACCESS="BEE_619589959"
     python scripts/e2e_test.py
 """
 
@@ -18,14 +19,13 @@ import asyncio
 import os
 import sys
 
-# 设置环境变量
-os.environ["MINI_ROUTER_ENV"] = "prd"
+# 设置数据库密码
 os.environ["MINI_ROUTER_DB_ACCESS"] = "BEE_619589959"
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mini_router.config.loader import load_config, load_config_from_db
+from mini_router.config.loader import load_database_config, load_config_from_db
 from mini_router.database import DatabaseConnection, ConfigRepository
 from mini_router.tenant.manager import TenantManager
 
@@ -34,16 +34,12 @@ async def test_database_connection():
     """测试数据库连接"""
     print("\n=== 测试 1: 数据库连接 ===")
 
-    config = load_config()
-    print(f"✓ 加载基础配置成功")
-    print(f"  database.enabled: {config.database.enabled}")
-    print(f"  database.host: {config.database.host}")
+    db_config = load_database_config(env="prd")
+    print(f"✓ 加载数据库配置成功")
+    print(f"  database.host: {db_config.host}")
+    print(f"  database.database: {db_config.database}")
 
-    if not config.database.enabled:
-        print("✗ 数据库未启用，跳过测试")
-        return None, None
-
-    db = DatabaseConnection(config.database)
+    db = DatabaseConnection(db_config)
     await db.connect()
     print(f"✓ 数据库连接成功")
 
@@ -57,17 +53,16 @@ async def test_global_config_loading(repo):
     """测试全局配置加载"""
     print("\n=== 测试 2: 全局配置加载 ===")
 
-    router_config = await load_config_from_db(repo)
-
-    if router_config:
+    try:
+        router_config = await load_config_from_db(repo)
         print(f"✓ 从数据库加载 RouterConfig 成功")
         print(f"  models.base_url: {router_config.models.base_url}")
         print(f"  models.timeout: {router_config.models.timeout}")
         print(f"  decisions count: {len(router_config.decisions)}")
         print(f"  cache.enabled: {router_config.cache.enabled}")
         return router_config
-    else:
-        print("✗ 数据库中没有全局配置")
+    except ValueError as e:
+        print(f"✗ 数据库中没有全局配置: {e}")
         return None
 
 
@@ -132,9 +127,6 @@ async def test_version_tracking(repo):
 async def test_reload(manager, repo):
     """测试配置重新加载"""
     print("\n=== 测试 6: 配置重新加载 ===")
-
-    # 添加一个测试租户（模拟配置变更）
-    # 这里只测试 reload 功能，不实际添加数据
 
     await manager.reload()
     print(f"✓ 租户重新加载成功: {len(manager.list_all())} 个")
