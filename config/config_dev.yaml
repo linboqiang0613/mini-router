@@ -1,10 +1,15 @@
 # Mini-Router 开发环境配置
+#
+# 配置来源逻辑：
+# - database.enabled=false: models/signals/decisions 从此 YAML 加载
+# - database.enabled=true: 从 mini_router_config.config_data 加载（此文件只提供连接信息）
+#
+# 开发环境默认禁用数据库，使用本地 YAML 配置便于调试
 
 server:
   host: "0.0.0.0"
   port: 8080
 
-# 数据库配置（开发环境可禁用）
 database:
   enabled: false
   host: "localhost"
@@ -14,9 +19,9 @@ database:
   min_connections: 2
   max_connections: 5
 
+# 以下配置仅在 database.enabled=false 时生效
 models:
   base_url: "https://coding.dashscope.aliyuncs.com/v1"
-  api_key: ""  # 通过环境变量传入
   tokenizer_path: "~/models/Qwen3-tokenizer"
   timeout: 120.0
 

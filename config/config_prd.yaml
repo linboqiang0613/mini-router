@@ -1,12 +1,15 @@
 # Mini-Router 生产环境配置
-# 注意：当 database.enabled=true 时，models/signals/decisions 等配置从数据库加载
-# 此文件只提供数据库连接信息和基础 server 配置
+#
+# 配置来源逻辑：
+# - database.enabled=false: models/signals/decisions 从 YAML 加载
+# - database.enabled=true: 从 mini_router_config.config_data 加载（YAML 只提供连接信息）
+#
+# 生产环境启用数据库，全局配置存储在 mini_router_config 表中
 
 server:
   host: "0.0.0.0"
   port: 8080
 
-# 数据库配置（生产环境启用）
 database:
   enabled: true
   host: "mysql.prod.internal"  # 替换为实际生产数据库地址
@@ -16,20 +19,15 @@ database:
   min_connections: 5
   max_connections: 20
 
-# 以下配置仅作为数据库初始化时的默认值参考
-# 实际运行时从 mini_router_config.config_data 加载
+# database.enabled=true 时，以下配置从 mini_router_config.config_data 加载
+# YAML 中的配置会被忽略（仅作为初始化数据库时的参考）
 #
-# 默认配置示例（用于 scripts/init_default_config.py）：
+# 数据库默认配置参考（用于 scripts/init_default_config.py）：
 # models:
 #   base_url: "https://coding.dashscope.aliyuncs.com/v1"
 #   tokenizer_path: "/app/models/Qwen3-tokenizer"
 #   timeout: 120.0
-#   classifier:
-#     intent: {model: "qwen3.5-plus", enabled: true, timeout: 50.0}
-#     pii: {model: "qwen3.5-plus", enabled: true, timeout: 50.0, fallback_label: "detected"}
-#     security: {model: "qwen3.5-plus", enabled: true, timeout: 50.0, fallback_label: "detected"}
-#     complexity: {model: "qwen3.5-plus", enabled: true, timeout: 50.0, fallback_label: "complex"}
-#     context_length: {enabled: true, timeout: 5.0, threshold: 10000}
+#   classifier: {...}
 # signals:
 #   keyword_rules: []
 # decisions: []
