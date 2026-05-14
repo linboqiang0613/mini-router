@@ -435,7 +435,11 @@ class TenantManager:
             if key in ("tenant_id", "id", "created_at"):
                 continue  # Skip immutable fields
             if key == "decisions":
-                db_updates[key] = [d.model_dump() for d in value] if value else None
+                # value can be list[Decision] (from TenantConfig) or list[dict] (from API request)
+                if value and isinstance(value[0], dict):
+                    db_updates[key] = value  # Already dict list
+                else:
+                    db_updates[key] = [d.model_dump() for d in value] if value else None
             elif key == "apikey_pool":
                 # Handle apikey_pool separately
                 continue

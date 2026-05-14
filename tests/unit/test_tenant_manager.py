@@ -647,6 +647,51 @@ class TestTenantManagerDatabase:
         mock_repo.update_tenant.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_async_update_with_decisions_dict(self, mock_repo):
+        """Test async_update with decisions as dict list (from API request)."""
+        manager = TenantManager(repository=mock_repo)
+        await manager._load_from_db()
+
+        # Decisions as dict list (simulating API request input)
+        decisions_dict = [
+            {
+                "name": "custom_route",
+                "priority": 100,
+                "rules": {"type": "keyword", "name": "custom_keyword"},
+                "model_refs": [{"model": "custom-model", "weight": 1.0}],
+            }
+        ]
+
+        updated = await manager.async_update("test-1", {"decisions": decisions_dict})
+
+        assert updated is not None
+        mock_repo.update_tenant.assert_called_once()
+        # Verify decisions passed correctly (as dict, not calling model_dump)
+        call_args = mock_repo.update_tenant.call_args[0]
+        assert "decisions" in call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_async_update_with_decisions_objects(self, mock_repo):
+        """Test async_update with decisions as Decision objects."""
+        manager = TenantManager(repository=mock_repo)
+        await manager._load_from_db()
+
+        # Decisions as Decision objects
+        decisions_objs = [
+            Decision(
+                name="custom_route",
+                priority=100,
+                rules=RuleNode(type=RuleType.KEYWORD, name="custom_keyword"),
+                model_refs=[ModelRef(model="custom-model", weight=1.0)],
+            )
+        ]
+
+        updated = await manager.async_update("test-1", {"decisions": decisions_objs})
+
+        assert updated is not None
+        mock_repo.update_tenant.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_async_update_apikey_pool(self, mock_repo):
         """Test async_update with apikey_pool."""
         manager = TenantManager(repository=mock_repo)
