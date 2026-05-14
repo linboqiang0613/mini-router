@@ -485,6 +485,19 @@ class TestTenantManagerDatabase:
         assert manager._apikey_pool["test-1"] == ["llm-key-1"]
 
     @pytest.mark.asyncio
+    async def test_tenant_apikey_pool_loaded_from_db(self, mock_repo):
+        """Test that TenantConfig.apikey_pool is populated from database."""
+        manager = TenantManager(repository=mock_repo)
+        await manager._load_from_db()
+
+        tenant = manager.get_by_id("test-1")
+        assert tenant is not None
+        # Verify apikey_pool field is populated (not empty)
+        assert tenant.apikey_pool == ["llm-key-1"]
+        # Also verify internal dictionary matches
+        assert manager._apikey_pool["test-1"] == tenant.apikey_pool
+
+    @pytest.mark.asyncio
     async def test_async_load_from_db(self, mock_repo):
         """Test async_load with repository."""
         manager = TenantManager(repository=mock_repo)

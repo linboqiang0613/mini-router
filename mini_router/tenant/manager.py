@@ -107,24 +107,25 @@ class TenantManager:
 
         tenants_data = await self.repository.get_all_tenants()
         for t in tenants_data:
+            # Load apikey pool from separate table first
+            pool_data = await self.repository.get_apikey_pool(t["tenant_id"])
+            active_keys = [k["apikey"] for k in pool_data if k.get("is_active", True)]
+
             tenant = TenantConfig(
                 tenant_id=t["tenant_id"],
                 apikey=t["apikey"],
+                apikey_pool=active_keys,  # Set apikey_pool from database
+                apikey_pool_mode=t.get("apikey_pool_mode", "round_robin"),
                 name=t.get("name"),
                 enabled=t.get("enabled", True),
                 base_url_template=t["base_url_template"],
                 timeout=t.get("timeout", 120.0),
-                apikey_pool_mode=t.get("apikey_pool_mode", "round_robin"),
                 decisions=t.get("decisions") or [],
                 created_at=t.get("created_at"),
                 updated_at=t.get("updated_at"),
             )
             self._tenants[tenant.tenant_id] = tenant
             self._apikey_index[tenant.apikey] = tenant.tenant_id
-
-            # Load apikey pool from separate table
-            pool_data = await self.repository.get_apikey_pool(tenant.tenant_id)
-            active_keys = [k["apikey"] for k in pool_data if k.get("is_active", True)]
             self._apikey_pool[tenant.tenant_id] = active_keys
 
         logger.info("tenants_loaded_from_db", count=len(self._tenants))
