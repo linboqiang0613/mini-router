@@ -512,11 +512,19 @@ async def get_tenant(tenant_id: str) -> TenantResponse:
 
 @app.post("/v1/tenants", response_model=TenantResponse, status_code=201)
 async def create_tenant(request: TenantCreateRequest) -> TenantResponse:
-    """Create a new tenant."""
+    """Create a new tenant.
+
+    In database mode, persists to mini_router_tenant and mini_router_apikey_pool tables.
+    In YAML mode, persists to tenants.yaml file.
+    """
     manager = get_tenant_manager()
     try:
         tenant = TenantConfig(**request.model_dump())
-        created = manager.create(tenant)
+        # Use async method for database mode, sync for YAML mode
+        if manager.repository:
+            created = await manager.async_create(tenant)
+        else:
+            created = manager.create(tenant)
         return TenantResponse.from_config(created)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -524,7 +532,11 @@ async def create_tenant(request: TenantCreateRequest) -> TenantResponse:
 
 @app.put("/v1/tenants/{tenant_id}", response_model=TenantResponse)
 async def update_tenant(tenant_id: str, request: TenantUpdateRequest) -> TenantResponse:
-    """Update a tenant (partial update)."""
+    """Update a tenant (partial update).
+
+    In database mode, persists to mini_router_tenant and mini_router_apikey_pool tables.
+    In YAML mode, persists to tenants.yaml file.
+    """
     manager = get_tenant_manager()
     # Only include non-None fields in the update
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
@@ -536,7 +548,11 @@ async def update_tenant(tenant_id: str, request: TenantUpdateRequest) -> TenantR
         return TenantResponse.from_config(tenant)
 
     try:
-        updated = manager.update(tenant_id, updates)
+        # Use async method for database mode, sync for YAML mode
+        if manager.repository:
+            updated = await manager.async_update(tenant_id, updates)
+        else:
+            updated = manager.update(tenant_id, updates)
         if updated is None:
             raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
         return TenantResponse.from_config(updated)
@@ -546,9 +562,17 @@ async def update_tenant(tenant_id: str, request: TenantUpdateRequest) -> TenantR
 
 @app.delete("/v1/tenants/{tenant_id}")
 async def delete_tenant(tenant_id: str) -> dict[str, str]:
-    """Delete a tenant."""
+    """Delete a tenant.
+
+    In database mode, deletes from mini_router_tenant and mini_router_apikey_pool tables.
+    In YAML mode, removes from tenants.yaml file.
+    """
     manager = get_tenant_manager()
-    deleted = manager.delete(tenant_id)
+    # Use async method for database mode, sync for YAML mode
+    if manager.repository:
+        deleted = await manager.async_delete(tenant_id)
+    else:
+        deleted = manager.delete(tenant_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
     return {"status": "deleted"}
