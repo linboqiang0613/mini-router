@@ -10,11 +10,12 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from mini_router.database import DatabaseConfig
 
 import yaml
 
 
-async def migrate_config(config_path: str, db_config: dict) -> None:
+async def migrate_config(config_path: str, db_config: DatabaseConfig) -> None:
     """Migrate global config to database."""
     from mini_router.database import DatabaseConnection, ConfigRepository
 
@@ -39,7 +40,7 @@ async def migrate_config(config_path: str, db_config: dict) -> None:
     await db.close()
 
 
-async def migrate_tenants(tenants_path: str, db_config: dict) -> None:
+async def migrate_tenants(tenants_path: str, db_config: DatabaseConfig) -> None:
     """Migrate tenant configs to database."""
     from mini_router.database import DatabaseConnection, ConfigRepository
 
@@ -94,14 +95,16 @@ def main():
         "database": args.database,
     }
 
+    ds_config = DatabaseConfig(**db_config)
+
     async def run():
         if Path(args.config).exists():
-            await migrate_config(args.config, db_config)
+            await migrate_config(args.config, ds_config)
         else:
             print(f"Config file not found: {args.config}")
 
         if Path(args.tenants).exists():
-            await migrate_tenants(args.tenants, db_config)
+            await migrate_tenants(args.tenants, ds_config)
         else:
             print(f"Tenants file not found: {args.tenants}")
 

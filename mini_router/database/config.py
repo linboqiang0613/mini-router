@@ -3,7 +3,7 @@
 
 import os
 from typing import Optional
-from .tools import decrypt_string
+from mini_router.database.tools import decrypt_string
 import structlog
 from pydantic import BaseModel, Field
 
