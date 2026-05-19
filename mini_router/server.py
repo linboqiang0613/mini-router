@@ -14,6 +14,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from mini_router.config.config import RouterConfig
+from mini_router.config.loader import (
+    load_yaml_config,
+    load_database_config,
+    load_config_from_db,
+)
+from mini_router.database import ConfigRepository, ConfigSyncService, DatabaseConnection
 from mini_router.proxy import ChatProxy, ChatRequest
 from mini_router.proxy.chat_proxy import AuthenticationError, TenantDisabledError
 from mini_router.router.router import Router, RoutingRequest
@@ -104,6 +110,11 @@ _router: Router | None = None
 _config: RouterConfig | None = None
 _chat_proxy: ChatProxy | None = None
 _tenant_manager: TenantManager | None = None
+
+# Database components
+_database_connection: DatabaseConnection | None = None
+_repository: ConfigRepository | None = None
+_sync_service: ConfigSyncService | None = None
 
 
 def get_router() -> Router:
@@ -202,12 +213,90 @@ def create_default_config() -> RouterConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
-    # Startup
-    router = get_router()
-    logger.info("router_initialized", decisions=len(router.config.decisions))
+    """Application lifespan handler.
+
+    Two modes:
+    - YAML mode: config_path provided, load from YAML files
+    - Database mode: config_path None, load from database using env
+    """
+    global _config, _router, _tenant_manager, _chat_proxy
+    global _database_connection, _repository, _sync_service
+
+    config_path = getattr(app.state, "config_path", None)
+    env = getattr(app.state, "env", "dev")
+
+    if config_path:
+        # === YAML Mode ===
+        logger.info("yaml_mode_enabled", config_path=config_path)
+
+        _config = load_yaml_config(config_path)
+        logger.info("config_loaded_from_yaml", decisions=len(_config.decisions))
+
+        _tenant_manager = TenantManager()
+        _tenant_manager.load()
+        logger.info("tenant_manager_initialized", tenants=len(_tenant_manager.list_all()))
+
+        _router = Router(_config)
+        logger.info("router_initialized", decisions=len(_config.decisions), mode="yaml")
+    else:
+        # === Database Mode ===
+        logger.info("database_mode_enabled", env=env)
+
+        # Load database connection config from envs file
+        db_config = load_database_config(env)
+
+        # Connect to database
+        try:
+            _database_connection = DatabaseConnection(db_config)
+            await _database_connection.connect()
+            logger.info("database_connected", host=db_config.host, database=db_config.database)
+        except Exception as e:
+            logger.error("database_connection_failed", error=str(e))
+            raise RuntimeError(f"Database connection failed: {e}") from e
+
+        # Create repository
+        _repository = ConfigRepository(_database_connection)
+
+        # Load router config from database
+        try:
+            _config = await load_config_from_db(_repository)
+            _config.database = db_config
+            logger.info("config_loaded_from_db", decisions=len(_config.decisions))
+        except Exception as e:
+            logger.error("config_load_from_db_failed", error=str(e))
+            raise RuntimeError(f"Failed to load config from database: {e}") from e
+
+        # Initialize TenantManager with repository
+        _tenant_manager = TenantManager(repository=_repository)
+        await _tenant_manager.async_load()
+        logger.info("tenant_manager_initialized", tenants=len(_tenant_manager.list_all()))
+
+        # Initialize Router with repository
+        _router = Router(_config, repository=_repository)
+        logger.info("router_initialized", decisions=len(_config.decisions), mode="database")
+
+        # Start sync service
+        _sync_service = ConfigSyncService(
+            repository=_repository,
+            tenant_manager=_tenant_manager,
+            router=_router,
+        )
+        await _sync_service.start()
+        logger.info("sync_service_started")
+
     yield
+
     # Shutdown
+    logger.info("shutdown_started")
+
+    if _sync_service:
+        await _sync_service.stop()
+        logger.info("sync_service_stopped")
+
+    if _database_connection:
+        await _database_connection.close()
+        logger.info("database_connection_closed")
+
     logger.info("router_shutdown")
 
 
@@ -257,13 +346,36 @@ async def ready() -> HealthResponse:
 
 
 @app.post("/v1/route", response_model=RouteResponse)
-async def route(request: RouteRequest) -> RouteResponse:
+async def route(
+    request: RouteRequest,
+    authorization: str | None = Header(default=None),
+) -> RouteResponse:
     """
     Route a query to the appropriate model.
 
-    This is the main endpoint that processes queries and returns routing decisions.
+    If Authorization header (Bearer token) is provided, uses tenant-specific decisions.
+    Otherwise, uses global router decisions.
+
+    This endpoint only returns routing decisions, does not forward to LLM.
     """
     router = get_router()
+    proxy = get_chat_proxy()
+    manager = get_tenant_manager()
+
+    # Determine decisions to use
+    decisions = None
+    tenant_id = None
+
+    if authorization:
+        # Extract apikey and authenticate tenant
+        apikey = proxy.extract_apikey(authorization)
+        if apikey:
+            tenant = manager.get_by_apikey(apikey)
+            if tenant:
+                if not tenant.enabled:
+                    raise HTTPException(status_code=403, detail="Tenant is disabled")
+                decisions = tenant.decisions
+                tenant_id = tenant.tenant_id
 
     routing_request = RoutingRequest(
         query=request.query,
@@ -271,7 +383,17 @@ async def route(request: RouteRequest) -> RouteResponse:
         metadata=request.metadata or {},
     )
 
-    result = await router.route(routing_request)
+    # Route with tenant decisions or global decisions
+    result = await router.route(routing_request, decisions=decisions)
+
+    # Add tenant_id to response metadata
+    logger.info(
+        "route_request",
+        query=request.query[:50],
+        decision=result.decision_name,
+        model=result.selected_model,
+        tenant=tenant_id,
+    )
 
     return RouteResponse(
         selected_model=result.selected_model,
@@ -390,11 +512,19 @@ async def get_tenant(tenant_id: str) -> TenantResponse:
 
 @app.post("/v1/tenants", response_model=TenantResponse, status_code=201)
 async def create_tenant(request: TenantCreateRequest) -> TenantResponse:
-    """Create a new tenant."""
+    """Create a new tenant.
+
+    In database mode, persists to mini_router_tenant and mini_router_apikey_pool tables.
+    In YAML mode, persists to tenants.yaml file.
+    """
     manager = get_tenant_manager()
     try:
         tenant = TenantConfig(**request.model_dump())
-        created = manager.create(tenant)
+        # Use async method for database mode, sync for YAML mode
+        if manager.repository:
+            created = await manager.async_create(tenant)
+        else:
+            created = manager.create(tenant)
         return TenantResponse.from_config(created)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -402,7 +532,11 @@ async def create_tenant(request: TenantCreateRequest) -> TenantResponse:
 
 @app.put("/v1/tenants/{tenant_id}", response_model=TenantResponse)
 async def update_tenant(tenant_id: str, request: TenantUpdateRequest) -> TenantResponse:
-    """Update a tenant (partial update)."""
+    """Update a tenant (partial update).
+
+    In database mode, persists to mini_router_tenant and mini_router_apikey_pool tables.
+    In YAML mode, persists to tenants.yaml file.
+    """
     manager = get_tenant_manager()
     # Only include non-None fields in the update
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
@@ -414,7 +548,11 @@ async def update_tenant(tenant_id: str, request: TenantUpdateRequest) -> TenantR
         return TenantResponse.from_config(tenant)
 
     try:
-        updated = manager.update(tenant_id, updates)
+        # Use async method for database mode, sync for YAML mode
+        if manager.repository:
+            updated = await manager.async_update(tenant_id, updates)
+        else:
+            updated = manager.update(tenant_id, updates)
         if updated is None:
             raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
         return TenantResponse.from_config(updated)
@@ -424,9 +562,17 @@ async def update_tenant(tenant_id: str, request: TenantUpdateRequest) -> TenantR
 
 @app.delete("/v1/tenants/{tenant_id}")
 async def delete_tenant(tenant_id: str) -> dict[str, str]:
-    """Delete a tenant."""
+    """Delete a tenant.
+
+    In database mode, deletes from mini_router_tenant and mini_router_apikey_pool tables.
+    In YAML mode, removes from tenants.yaml file.
+    """
     manager = get_tenant_manager()
-    deleted = manager.delete(tenant_id)
+    # Use async method for database mode, sync for YAML mode
+    if manager.repository:
+        deleted = await manager.async_delete(tenant_id)
+    else:
+        deleted = manager.delete(tenant_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
     return {"status": "deleted"}
@@ -491,24 +637,41 @@ async def chat_completions(
 
 
 def main():
-    """Main entry point for the server."""
+    """Main entry point for the server.
+
+    Two modes:
+    - YAML mode: --config=<path> provided, load config from YAML file
+    - Database mode: --config empty (default), load config from database using --env
+    """
     parser = argparse.ArgumentParser(description="Mini-Router HTTP Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
-    parser.add_argument("--config", default="config.yaml", help="Path to config file (YAML)")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config YAML file. If provided, uses YAML mode (single-instance). "
+             "If empty (default), uses database mode (multi-instance with config sync)."
+    )
+    parser.add_argument(
+        "--env",
+        default="dev",
+        help="Environment for database mode (dev/prd). Used to select config/envs_{env}.yaml. "
+             "Default: dev. Ignored if --config is provided."
+    )
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     args = parser.parse_args()
 
-    # Load config before starting server
-    global _config
-    config_path = Path(args.config)
-    if config_path.exists():
-        _config = RouterConfig.from_yaml(config_path)
-        logger.info("config_loaded", path=str(config_path), decisions=len(_config.decisions))
+    # Determine mode
+    if args.config:
+        mode = "yaml"
+        logger.info("starting_server", host=args.host, port=args.port, mode=mode, config=args.config)
     else:
-        logger.warning("config_not_found", path=str(config_path), using="default")
+        mode = "database"
+        logger.info("starting_server", host=args.host, port=args.port, mode=mode, env=args.env)
 
-    logger.info("starting_server", host=args.host, port=args.port)
+    # Store config path and env in app state for lifespan to access
+    app.state.config_path = args.config
+    app.state.env = args.env
 
     # Pass app object directly (not string) to preserve global state
     uvicorn.run(

@@ -54,10 +54,39 @@ class RoutingResult:
 class Router:
     """Main router combining signal, decision, algorithm, and plugin layers."""
 
-    def __init__(self, config: RouterConfig) -> None:
+    def __init__(
+        self,
+        config: RouterConfig,
+        repository: Any = None,
+    ) -> None:
         self.config = config
+        self._repository = repository
         self._latency_tracker = LatencyTracker()
         self._initialize_components()
+
+    async def reload_config(self) -> None:
+        """Reload configuration from database.
+
+        Called by ConfigSyncService when global config version changes.
+        """
+        if not self._repository:
+            logger.warning("reload_config_no_repository")
+            return
+
+        try:
+            config_data = await self._repository.get_global_config()
+            if config_data:
+                new_config = RouterConfig.from_dict(config_data["config_data"])
+                self.config = new_config
+                self._initialize_components()
+                logger.info("router_config_reloaded", version=config_data.get("version"))
+        except Exception as e:
+            logger.error(
+                "reload_config_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            # Config remains unchanged on error
 
     def _initialize_components(self) -> None:
         """Initialize all router components."""

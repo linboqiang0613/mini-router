@@ -10,7 +10,12 @@
 
 ```bash
 # 进入项目目录
-cd src/mini-router-python
+cd mini-router
+
+# 创建虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# 或 .venv\Scripts\activate  # Windows
 
 # 安装依赖
 pip install -e .
@@ -30,672 +35,529 @@ pip install -e ".[dev]"
 mini-router-server --help
 
 # 输出:
-# usage: mini-router-server [-h] [--host HOST] [--port PORT] [--config CONFIG] [--reload]
+# usage: mini-router-server [-h] [--host HOST] [--port PORT] [--config CONFIG] [--env ENV]
 #
 # Mini-Router HTTP Server
 #
 # options:
 #   --host HOST     Host to bind to
 #   --port PORT     Port to bind to
-#   --config CONFIG Path to config file (YAML)
-#   --reload        Enable auto-reload for development
+#   --config CONFIG Path to config YAML file. If provided, uses YAML mode.
+#                   If empty (default), uses database mode with config sync.
+#   --env ENV       Environment for database mode (dev/prd). Default: dev.
+#                   Ignored if --config is provided.
 ```
 
 ---
 
-## 二、配置本地模型
+## 二、启动模式
 
-### 2.1 配置文件结构
+Mini-Router 支持两种启动模式：
 
-Mini-Router 使用 YAML 配置文件，主要包含以下部分：
+| 模式 | 配置来源 | 适用场景 | 多实例支持 |
+|------|----------|----------|------------|
+| **YAML 模式** | 本地 YAML 文件 | 开发调试、单实例部署 | ❌ |
+| **数据库模式** | MySQL 数据库 | 生产环境、多实例部署 | ✅ |
 
-```yaml
-# 服务配置
-server:
-  host: "0.0.0.0"
-  port: 8080
+### 2.1 YAML 模式（单实例）
 
-# 模型配置 - 连接本地部署的 LLM
-models:
-  base_url: "http://localhost:8000/v1"  # 本地模型 API 地址
-  api_key: ""                            # 本地部署通常无需 API Key
-  timeout: 120.0
-
-  # 分类器配置 (用于信号层)
-  classifier:
-    intent:
-      model: "local-model"    # 使用本地模型进行意图分类
-      enabled: true
-    complexity:
-      model: "local-model"
-      enabled: true
-    pii:
-      model: "local-model"
-      enabled: true
-    security:
-      model: "local-model"
-      enabled: true
-
-# 信号规则 (关键词匹配)
-signals:
-  keyword_rules:
-    - name: "code_related"
-      keywords: ["code", "python", "debug"]
-      operator: "any"
-      case_sensitive: false
-
-# 决策规则 (路由策略)
-decisions:
-  - name: "route_to_code_model"
-    priority: 10
-    rules:
-      type: "keyword"
-      name: "code_related"
-    model_refs:
-      - model: "codellama"
-        weight: 1.0
-
-# 模型选择策略
-selection:
-  strategy: "latency_aware"  # 或 priority, weighted
-
-# 缓存配置
-cache:
-  enabled: true
-  max_entries: 10000
-```
-
-### 2.2 本地模型部署方式
-
-Mini-Router 需要连接一个 OpenAI-compatible API。以下是几种常见的本地部署方式：
-
-#### 方式一：使用 vLLM
+使用 `--config` 参数指定配置文件路径，配置从本地 YAML 文件加载：
 
 ```bash
-# 安装 vLLM
-pip install vllm
+# 使用默认配置文件
+mini-router-server --config config.yaml
 
-# 启动 vLLM 服务 (OpenAI-compatible API)
-vllm serve meta-llama/Llama-3-8b \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --api-key token-abc123
-
-# 配置 mini-router 连接
-models:
-  base_url: "http://localhost:8000/v1"
-  api_key: "token-abc123"
+# 使用自定义配置文件
+mini-router-server --config my_config.yaml
 ```
 
-#### 方式二：使用 Ollama
+**配置文件结构：**
+
+- `config.yaml` - 全局路由配置（models/signals/decisions/cache）
+- `config/tenants.yaml` - 租户配置（apikey/decisions/base_url_template）
+
+**特点：**
+- 配置修改需要重启服务
+- 不支持多实例部署（配置不一致）
+- 适合本地开发调试
+
+### 2.2 数据库模式（多实例）
+
+不指定 `--config` 参数（默认），配置从 MySQL 数据库加载：
 
 ```bash
-# 安装 Ollama (macOS/Linux)
-# 参考: https://ollama.ai
+# 设置数据库密码环境变量
+export MINI_ROUTER_DB_ACCESS="your_password"
+# 或使用 BEE_ 前缀（自动去除）
+export MINI_ROUTER_DB_ACCESS="BEE_your_password"
 
-# 拉取模型
-ollama pull llama3
-
-# Ollama 默认在 localhost:11434 提供 API
-# 但需要 OpenAI-compatible 适配层
-```
-
-#### 方式三：使用 LM Studio
-
-LM Studio 提供本地模型服务，默认端口 1234：
-
-```yaml
-models:
-  base_url: "http://localhost:1234/v1"
-  api_key: ""
-```
-
-#### 方式四：使用推理框架 (TGI, TensorRT-LLM 等)
-
-```bash
-# TGI 示例
-text-generation-launcher \
-  --model-id meta-llama/Llama-3-8b \
-  --port 8000
-
-# 配置
-models:
-  base_url: "http://localhost:8000/v1"
-```
-
-### 2.3 完整配置示例 (本地部署)
-
-创建配置文件 `config/local.yaml`：
-
-```yaml
-# 本地部署配置示例
-server:
-  host: "0.0.0.0"
-  port: 8080
-
-models:
-  # 连接本地 vLLM/Ollama/LM Studio 服务
-  base_url: "http://localhost:8000/v1"
-  api_key: ""
-  tokenizer_path: "~/Qwen3-tokenizer"  # HuggingFace tokenizer 路径
-  timeout: 120.0
-
-  classifier:
-    # 使用本地模型进行分类
-    # 如果模型名称与实际部署不一致，请修改
-    intent:
-      model: "llama-3-8b"
-      enabled: true
-    complexity:
-      model: "llama-3-8b"
-      enabled: true
-    pii:
-      model: "llama-3-8b"
-      enabled: false  # 可关闭部分分类器以减少延迟
-    security:
-      model: "llama-3-8b"
-      enabled: false
-    context_length:         # 上下文长度分类器
-      enabled: true
-      threshold: 10000      # token 阈值
-
-  embedder:
-    model: "text-embedding"
-    enabled: false  # 语义缓存需要嵌入模型
-
-signals:
-  keyword_rules:
-    - name: "code_related"
-      keywords: ["code", "programming", "function", "debug", "error", "python", "java", "golang"]
-      operator: "any"
-      case_sensitive: false
-
-    - name: "math_related"
-      keywords: ["calculate", "math", "equation", "solve", "compute"]
-      operator: "any"
-      case_sensitive: false
-
-    - name: "simple_query"
-      keywords: ["what is", "hello", "hi", "thanks"]
-      operator: "any"
-      case_sensitive: false
-
-decisions:
-  # 代码相关问题路由到代码模型
-  - name: "route_to_code_model"
-    priority: 10
-    rules:
-      type: "keyword"
-      name: "code_related"
-    model_refs:
-      - model: "codellama-70b"
-        weight: 1.0
-      - model: "llama-3-8b"
-        weight: 0.5
-
-  # 数学问题路由到数学模型
-  - name: "route_to_math_model"
-    priority: 5
-    rules:
-      type: "keyword"
-      name: "math_related"
-    model_refs:
-      - model: "llama-3-8b"
-        weight: 1.0
-
-  # 简单问题使用轻量模型
-  - name: "route_simple_query"
-    priority: 3
-    rules:
-      type: "keyword"
-      name: "simple_query"
-    model_refs:
-      - model: "llama-3-8b"
-        weight: 1.0
-
-  # 兜底路由
-  - name: "default_route"
-    priority: 1
-    rules:
-      type: "or"
-      children:
-        - type: "keyword"
-          name: "code_related"
-        - type: "keyword"
-          name: "math_related"
-    model_refs:
-      - model: "llama-3-8b"
-        weight: 1.0
-
-selection:
-  strategy: "latency_aware"
-  latency_aware:
-    tpot_percentile: 50
-    ttft_percentile: 90
-    min_observations: 3
-    fallback_to_weight: true
-    weight_blend: 0.3
-
-cache:
-  enabled: true
-  similarity_threshold: 0.95
-  max_entries: 10000
-```
-
----
-
-## 三、启动服务
-
-### 3.1 使用默认配置启动
-
-```bash
-# 默认监听 0.0.0.0:8080
+# 启动服务（默认 dev 环境）
 mini-router-server
 
-# 或指定端口
-mini-router-server --port 9000
+# 或指定生产环境
+mini-router-server --env prd
 ```
 
-### 3.2 使用配置文件启动
+**环境配置文件：**
 
-```bash
-# 使用本地配置
-mini-router-server --config config/local.yaml
+数据库模式使用 `--env` 参数选择环境配置文件：
 
-# 开发模式 (自动重载)
-mini-router-server --config config/local.yaml --reload
+| 环境 | 配置文件 | 内容 |
+|------|----------|------|
+| `dev` | `config/envs_dev.yaml` | 数据库连接信息（localhost） |
+| `prd` | `config/envs_prd.yaml` | 数据库连接信息（生产服务器） |
+
+**配置文件示例（envs_prd.yaml）：**
+
+```yaml
+# 仅包含数据库连接配置，不包含路由规则
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  host: "1.94.232.185"
+  port: 3306
+  user: "root"
+  database: "mini_router"
+  min_connections: 2
+  max_connections: 10
 ```
 
-### 3.3 直接运行模块
+**特点：**
+- 支持配置热更新（轮询检测版本变化）
+- 多实例部署时配置一致
+- 租户配置也从数据库加载
+- 数据库连接失败时抛出错误（不回退到 YAML）
+
+### 2.3 环境变量说明
+
+| 环境变量 | 说明 | 示例 |
+|----------|------|------|
+| `MINI_ROUTER_DB_ACCESS` | 数据库密码，支持 `BEE_` 前缀自动去除 | `BEE_619589959` → `619589959` |
+
+**BEE_ 前缀说明：**
+- 兼容 CoPaw 系统的密码格式
+- 如果密码以 `BEE_` 开头，会自动去除前缀
+- 例如：`BEE_619589959` 实际密码为 `619589959`
+
+### 2.4 使用启动脚本
+
+项目提供了便捷的启动脚本：
+
+**开发环境（YAML 模式）：**
 
 ```bash
-# 不安装直接运行
-python -m mini_router.server --config config.yaml
+./scripts/start_dev.sh
+# 使用 config.yaml 配置，不连接数据库
+```
 
-# 或使用 uvicorn
-uvicorn mini_router.server:app --host 0.0.0.0 --port 8080
+**开发环境（数据库模式）：**
+
+```bash
+export MINI_ROUTER_DB_ACCESS="your_password"
+./scripts/start_dev_db.sh
+# 连接 localhost 数据库
+```
+
+**生产环境（数据库模式）：**
+
+```bash
+export MINI_ROUTER_DB_ACCESS="BEE_your_password"
+./scripts/start_prd.sh
+# 连接生产数据库，使用 envs_prd.yaml 配置
 ```
 
 ---
 
-## 四、测试接口
+## 三、数据库配置说明
 
-服务启动后，可通过以下方式测试：
+### 3.1 数据库表结构
 
-### 4.1 健康检查
+数据库模式使用以下表存储配置：
+
+| 表名 | 说明 |
+|------|------|
+| `mini_router_config` | 全局路由配置（models/signals/decisions） |
+| `mini_router_tenant` | 租户配置（apikey/decisions/base_url_template） |
+| `mini_router_apikey_pool` | 租户 API Key 池 |
+
+**初始化脚本：**
 
 ```bash
-curl http://localhost:8080/healthz
-# {"status": "healthy", "version": "0.1.0"}
+# 连接数据库
+mysql -h host -u root -p mini_router
 
-curl http://localhost:8080/readyz
-# {"status": "ready", "version": "0.1.0"}
+# 执行初始化脚本
+source scripts/init_db.sql
 ```
 
-### 4.2 路由决策
+### 3.2 全局配置表
+
+```sql
+CREATE TABLE mini_router_config (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    config_data JSON NOT NULL,  -- RouterConfig JSON
+    version INT DEFAULT 1,      -- 版本号，每次更新自增
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+**config_data 示例：**
+
+```json
+{
+  "models": {
+    "base_url": "https://api.example.com/v1",
+    "timeout": 120.0,
+    "classifier": {...}
+  },
+  "signals": {"keyword_rules": [...]},
+  "decisions": [...],
+  "selection": {"strategy": "latency_aware"},
+  "cache": {"enabled": true}
+}
+```
+
+### 3.3 租户配置表
+
+```sql
+CREATE TABLE mini_router_tenant (
+    tenant_id VARCHAR(64) PRIMARY KEY,
+    apikey VARCHAR(128) NOT NULL,
+    name VARCHAR(128),
+    enabled BOOLEAN DEFAULT TRUE,
+    base_url_template VARCHAR(256) NOT NULL,
+    timeout FLOAT DEFAULT 120.0,
+    apikey_pool_mode VARCHAR(32) DEFAULT 'round_robin',
+    decisions JSON,             -- 租户专属路由规则
+    version INT DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+### 3.4 API Key 池表
+
+```sql
+CREATE TABLE mini_router_apikey_pool (
+    tenant_id VARCHAR(64) NOT NULL,
+    apikey VARCHAR(128) NOT NULL,
+    apikey_order INT NOT NULL,  -- Key 顺序（0=优先）
+    is_active BOOLEAN DEFAULT TRUE,
+    PRIMARY KEY (tenant_id, apikey_order)
+);
+```
+
+### 3.5 配置同步机制
+
+数据库模式使用版本号轮询检测配置变化：
+
+| 配置类型 | 轮询间隔 | 说明 |
+|----------|----------|------|
+| 全局配置 | 120 秒 | 检测 `mini_router_config.version` 变化 |
+| 租户配置 | 10 秒 | 检测 `mini_router_tenant.version` 最大值变化 |
+
+当检测到版本变化时，自动重新加载配置，无需重启服务。
+
+---
+
+## 四、API 接口说明
+
+### 4.1 路由决策接口
+
+**POST /v1/route**
+
+获取路由决策，不调用 LLM。支持两种模式：
+
+**无认证（使用全局配置）：**
 
 ```bash
-# 只获取路由决策，不调用模型
 curl -X POST http://localhost:8080/v1/route \
   -H "Content-Type: application/json" \
   -d '{"query": "写一个 Python 函数计算斐波那契数列"}'
 
 # 响应:
-# {
-#   "selected_model": "codellama-70b",
-#   "decision_name": "route_to_code_model",
-#   "matched_rules": ["code_related"],
-#   "confidence": 0.8,
-#   "cache_hit": false,
-#   "action": "route"
-# }
+{
+  "selected_model": "qwen3.5-plus",
+  "decision_name": "default_route",
+  "matched_rules": ["complexity"],
+  "confidence": 1.0,
+  "action": "route"
+}
 ```
 
-### 4.3 Chat Completions (流式)
+**带认证（使用租户配置）：**
 
 ```bash
-# 流式调用 - 自动路由并调用模型
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:8080/v1/route \
+  -H "Authorization: Bearer sk-tenant-key" \
   -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "Hello, how are you?"}],
-    "stream": true
-  }'
+  -d '{"query": "写一个 Python 函数计算斐波那契数列"}'
 
-# SSE 流式响应:
-# data: {"id":"chatcmpl-xxx","model":"llama-3-8b","choices":[{"delta":{"content":"Hello"}}]}
-# data: {"id":"chatcmpl-xxx","model":"llama-3-8b","choices":[{"delta":{"content":"!"}}]}
-# data: [DONE]
+# 响应（使用租户专属路由规则）:
+{
+  "selected_model": "qwen3-max",
+  "decision_name": "route_complex_query",
+  "matched_rules": ["complexity"],
+  "confidence": 1.0,
+  "action": "route"
+}
 ```
 
-### 4.4 Chat Completions (非流式)
+**参数说明：**
 
-```bash
-# 非流式调用
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "What is 2+2?"}],
-    "stream": false
-  }'
+| 参数 | 说明 |
+|------|------|
+| `query` | 用户查询文本 |
+| `user_id` | 可选，用户标识 |
+| `metadata` | 可选，元数据字典 |
 
-# JSON 响应:
-# {
-#   "id": "chatcmpl-xxx",
-#   "model": "llama-3-8b",
-#   "choices": [{"message": {"content": "The answer is 4"}}]
-# }
-```
+### 4.2 Chat Completions 接口
 
-### 4.5 查看延迟统计
+**POST /v1/chat/completions**
 
-```bash
-# 查看所有模型延迟
-curl http://localhost:8080/v1/latency
-
-# 查看特定模型延迟
-curl http://localhost:8080/v1/latency/llama-3-8b
-```
-
-### 4.6 手动上报延迟
-
-如果使用 `/v1/route` 模式（只返回路由决策，不调用模型），需要手动上报延迟：
-
-```bash
-curl -X POST http://localhost:8080/v1/feedback \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "codellama-70b",
-    "latency_seconds": 1.5,
-    "tpot": 0.05,
-    "ttft": 0.3
-  }'
-```
-
----
-
-## 五、多租户支持
-
-Mini-Router 支持多租户隔离，每个租户可以配置独立的 API Key、路由规则和上游 API 地址。
-
-### 5.1 租户认证
-
-调用 `/v1/chat/completions` 需要在请求头中提供租户 API Key：
+OpenAI-compatible 接口，需要租户认证：
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-tenant-key" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-tenant-001-key" \
   -d '{
     "messages": [{"role": "user", "content": "Hello"}],
-    "stream": true
+    "stream": false
   }'
 ```
 
-**认证错误响应：**
+**认证说明：**
+
+- Authorization header 格式：`Bearer sk-tenant-key`
+- 租户 API Key 从 `mini_router_tenant.apikey` 或 `config/tenants.yaml` 加载
+- 认证成功后使用租户专属配置（decisions/base_url_template/apikey_pool）
+
+**错误响应：**
 
 | 状态码 | 说明 |
 |--------|------|
 | 401 | API Key 无效或缺失 |
 | 403 | 租户已禁用 |
 
-### 5.2 租户管理 API
-
-#### 创建租户
-
-```bash
-curl -X POST http://localhost:8080/v1/tenants \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tenant_id": "tenant-001",
-    "apikey": "sk-tenant-001-key",
-    "name": "租户 A",
-    "base_url_template": "http://api-a.com/llm/{model}/v1",
-    "decisions": []
-  }'
-```
-
-#### 列出所有租户
-
-```bash
-curl http://localhost:8080/v1/tenants
-```
-
-#### 获取租户详情
-
-```bash
-curl http://localhost:8080/v1/tenants/tenant-001
-```
-
-#### 更新租户
-
-```bash
-curl -X PUT http://localhost:8080/v1/tenants/tenant-001 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "更新后的租户名称",
-    "timeout": 60.0
-  }'
-```
-
-#### 删除租户
-
-```bash
-curl -X DELETE http://localhost:8080/v1/tenants/tenant-001
-```
-
-### 5.3 租户配置结构
-
-每个租户可以配置：
-
-| 字段 | 说明 |
-|------|------|
-| `tenant_id` | 租户唯一标识 |
-| `apikey` | 租户 API Key（用于认证） |
-| `apikey_pool` | API Key 池（用于调用 LLM 服务） |
-| `apikey_pool_mode` | API Key 池选择模式：`round_robin`（轮询）或 `fallback`（429降级） |
-| `name` | 租户名称 |
-| `enabled` | 是否启用 |
-| `base_url_template` | 上游 API URL 模板（支持 `{model}` 占位符） |
-| `timeout` | 请求超时时间 |
-| `decisions` | 租户专属路由规则 |
-
-### 5.4 API Key 池配置
-
-租户可以配置一个 API Key 池，用于调用上游 LLM 服务。支持两种选择模式：
-
-#### Round-Robin 模式（默认）
-
-每次请求轮询切换 Key：
-
-```yaml
-tenants:
-  - tenant_id: "tenant-001"
-    apikey: "sk-auth-key"          # 认证 Key
-    apikey_pool:                   # 调用 LLM 的 Key 池
-      - "sk-llm-key-1"
-      - "sk-llm-key-2"
-      - "sk-llm-key-3"
-    apikey_pool_mode: "round_robin"  # 默认值，可省略
-```
-
-请求序列：Key1 → Key2 → Key3 → Key1 → Key2 → ...
-
-#### Fallback 模式（429 降级）
-
-优先使用第一个 Key，遇到 429 限流时自动切换下一个：
-
-```yaml
-tenants:
-  - tenant_id: "tenant-002"
-    apikey: "sk-auth-key"
-    apikey_pool:
-      - "sk-llm-key-1"
-      - "sk-llm-key-2"
-      - "sk-llm-key-3"
-    apikey_pool_mode: "fallback"
-```
-
-行为：
-- 请求优先使用 Key1
-- Key1 返回 429 时，自动切换 Key2
-- Key2 返回 429 时，自动切换 Key3
-- 所有 Key 都返回 429 时，返回 429 错误（不循环重试）
-- 下次请求重新从 Key1 开始（不记录冷却状态）
-
-**注意**：
-- 只对 HTTP 429 错误触发降级，其他错误直接返回
-- 流式请求只在开始时检测 429，中途失败不降级
-- 空 `apikey_pool` 时使用 `apikey` 字段作为单一 Key
-
-### 5.5 API Key 选择策略（高级用法）
-
-Mini-Router 使用策略模式实现 API Key 选择逻辑，支持通过参数传入自定义策略。
-
-#### 策略接口
-
-```python
-from mini_router.proxy.strategies import ApiKeyStrategy
-
-class CustomStrategy(ApiKeyStrategy):
-    async def select_key(self, pool: list[str], tenant_id: str) -> str:
-        """选择 API Key（异步方法，支持状态管理）"""
-        ...
-
-    def next_key_on_error(self, pool: list[str], current_key: str, error: Exception) -> str | None:
-        """错误后返回下一个 Key，或 None 停止重试"""
-        ...
-```
-
-**关键变更：**
-- `select_key()` 现在是 **异步方法** (`async def`)，支持有状态策略（如轮询）
-- 新增 `tenant_id` 参数，用于策略维护状态（轮询模式需要）
-- 策略统一负责 Key 选择，ChatProxy 不再有分支逻辑
-
-#### 使用自定义策略
-
-```python
-from mini_router.proxy.strategies import FallbackStrategy
-from mini_router.proxy.chat_proxy import ChatProxy
-
-# 创建自定义策略
-strategy = FallbackStrategy()
-
-# 调用时传入策略（策略会统一处理 Key 选择）
-response = await proxy.chat(request, tenant=tenant, strategy=strategy)
-```
-
-#### 内置策略
-
-| 策略 | select_key 行为 | next_key_on_error 行为 |
-|------|----------------|----------------------|
-| `RoundRobinStrategy` | 使用 `ApiKeyPoolSelector` 维护轮询状态，每次调用返回下一个 Key | 返回 None（不重试） |
-| `FallbackStrategy` | 返回 `pool[0]`（无状态） | 429 时返回下一个 Key，否则返回 None |
-
-**状态管理说明：**
-- `RoundRobinStrategy` 内部使用 `ApiKeyPoolSelector` 的 `_indices` 字典维护轮询状态
-- `FallbackStrategy` 无需状态管理，每次都从第一个 Key 开始
-
----
-
-## 六、API 端点列表
+### 4.3 其他接口
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/healthz` | GET | 健康检查 |
 | `/readyz` | GET | 就绪检查 |
-| `/v1/route` | POST | 路由决策（不调用模型） |
-| `/v1/chat/completions` | POST | OpenAI-compatible Chat（需租户认证） |
-| `/v1/feedback` | POST | 上报延迟反馈 |
-| `/v1/latency` | GET | 获取所有模型延迟统计 |
-| `/v1/latency/{model}` | GET | 获取特定模型延迟统计 |
-| `/v1/config` | GET | 获取当前配置 |
-| `/v1/cache` | POST | 设置缓存条目 |
-| `/v1/cache` | DELETE | 清空缓存 |
+| `/v1/config` | GET | 获取当前路由配置 |
 | `/v1/tenants` | GET | 列出所有租户 |
-| `/v1/tenants` | POST | 创建租户 |
-| `/v1/tenants/{tenant_id}` | GET | 获取租户详情 |
-| `/v1/tenants/{tenant_id}` | PUT | 更新租户 |
-| `/v1/tenants/{tenant_id}` | DELETE | 删除租户 |
+| `/v1/tenants/{id}` | GET | 获取租户详情 |
+| `/v1/latency` | GET | 获取延迟统计 |
+| `/v1/feedback` | POST | 上报延迟反馈 |
+
+---
+
+## 五、多租户配置
+
+### 5.1 租户专属路由规则
+
+每个租户可以配置独立的 `decisions`，优先级高于全局配置：
+
+**数据库模式（mini_router_tenant.decisions）：**
+
+```json
+[
+  {"name": "block_pii", "rules": {"type": "signal", "signal": "pii"}, "action": "reject"},
+  {"name": "route_complex", "rules": {"type": "signal", "signal": "complexity"}, "model_refs": [{"model": "strong-model"}]},
+  {"name": "default", "priority": 0, "model_refs": [{"model": "default-model"}]}
+]
+```
+
+**YAML 模式（config/tenants.yaml）：**
+
+```yaml
+tenants:
+  - tenant_id: "tenant-001"
+    apikey: "sk-tenant-key"
+    base_url_template: "https://api.example.com/llm/{model}/v1"
+    decisions:
+      - name: "block_pii"
+        rules: {type: "signal", signal: "pii"}
+        action: "reject"
+      - name: "default_route"
+        priority: 0
+        model_refs:
+          - model: "qwen3.5-plus"
+            weight: 1.0
+```
+
+### 5.2 API Key 池配置
+
+租户可以配置 API Key 池用于调用 LLM：
+
+**数据库模式：**
+
+```sql
+INSERT INTO mini_router_apikey_pool VALUES
+('tenant-001', 'sk-llm-key-1', 0, TRUE),
+('tenant-001', 'sk-llm-key-2', 1, TRUE),
+('tenant-001', 'sk-llm-key-3', 2, TRUE);
+```
+
+**YAML 模式：**
+
+```yaml
+tenants:
+  - tenant_id: "tenant-001"
+    apikey_pool:
+      - "sk-llm-key-1"
+      - "sk-llm-key-2"
+      - "sk-llm-key-3"
+    apikey_pool_mode: "round_robin"  # 或 "fallback"
+```
+
+**选择模式说明：**
+
+| 模式 | 行为 |
+|------|------|
+| `round_robin` | 每次请求轮询切换 Key |
+| `fallback` | 优先第一个 Key，429 时降级到下一个 |
+
+---
+
+## 六、端到端测试
+
+### 6.1 运行 E2E 测试
+
+```bash
+# 设置数据库密码
+export MINI_ROUTER_DB_ACCESS="BEE_619589959"
+
+# 运行测试
+source .venv/bin/activate
+python scripts/e2e_test.py
+```
+
+**测试内容：**
+
+1. 数据库连接
+2. 全局配置加载
+3. 租户配置加载
+4. API Key 池操作
+5. 版本追踪
+6. 配置重新加载
+
+### 6.2 手动测试
+
+```bash
+# 启动服务（数据库模式）
+export MINI_ROUTER_DB_ACCESS="your_password"
+mini-router-server --env prd
+
+# 测试健康检查
+curl http://localhost:8080/healthz
+
+# 测试路由决策（全局）
+curl -X POST http://localhost:8080/v1/route \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Hello"}'
+
+# 测试路由决策（租户）
+curl -X POST http://localhost:8080/v1/route \
+  -H "Authorization: Bearer sk-tenant-key" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Hello"}'
+
+# 测试 Chat Completions
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-tenant-key" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
+```
 
 ---
 
 ## 七、常见问题
 
-### Q1: 本地模型名称如何确定？
+### Q1: 如何选择启动模式？
 
-模型名称需要与实际部署的 API 返回的模型名称一致。可以通过以下方式查询：
+| 场景 | 推荐模式 |
+|------|----------|
+| 本地开发调试 | YAML 模式 (`--config config.yaml`) |
+| 单实例部署 | YAML 模式 |
+| 多实例部署 | 数据库模式（默认） |
+| 需要配置热更新 | 数据库模式 |
+
+### Q2: 数据库连接失败怎么办？
+
+数据库模式下，连接失败会抛出错误并退出服务。请检查：
+
+1. `config/envs_{env}.yaml` 中的数据库地址是否正确
+2. `MINI_ROUTER_DB_ACCESS` 环境变量是否设置
+3. 数据库是否已创建表结构（执行 `scripts/init_db.sql`）
+
+### Q3: 如何切换数据库环境？
+
+使用 `--env` 参数：
 
 ```bash
-curl http://localhost:8000/v1/models
+# 开发环境（localhost）
+mini-router-server --env dev
+
+# 生产环境
+mini-router-server --env prd
 ```
 
-返回的 `id` 字段即为模型名称。
+### Q4: 租户路由规则不生效？
 
-### Q2: 分类器延迟过高怎么办？
+请确保：
 
-分类器调用会增加路由延迟（100-500ms）。可以：
-1. 禁用部分分类器（设置 `enabled: false`）
-2. 使用更轻量的分类模型
-3. 仅依赖关键词规则进行快速路由
+1. `/v1/route` 或 `/v1/chat/completions` 请求携带了正确的 Authorization header
+2. 租户的 `apikey` 与 header 中的 Bearer token 匹配
+3. 租户的 `enabled` 字段为 `TRUE`
 
-### Q3: 如何关闭语义缓存？
+### Q5: 如何更新数据库中的配置？
 
-```yaml
-cache:
-  enabled: false
+直接修改数据库表后，更新 `version` 字段：
+
+```sql
+-- 更新全局配置
+UPDATE mini_router_config 
+SET config_data = '...', version = version + 1;
+
+-- 更新租户配置
+UPDATE mini_router_tenant 
+SET decisions = '...', version = version + 1 
+WHERE tenant_id = 'xxx';
 ```
 
-或使用精确缓存（Memory Cache）而非语义缓存。
-
-### Q4: latency_aware 策略无数据怎么办？
-
-配置 `fallback_to_weight: true`，在无延迟数据时回退到权重选择：
-
-```yaml
-selection:
-  strategy: "latency_aware"
-  latency_aware:
-    fallback_to_weight: true
-    min_observations: 3
-```
+服务会在下次轮询时自动检测版本变化并重新加载。
 
 ---
 
 ## 八、开发调试
 
-### 7.1 运行单元测试
+### 8.1 运行单元测试
 
 ```bash
-# 运行所有测试
 pytest tests/
-
-# 运行特定测试
-pytest tests/unit/test_router.py
 
 # 带覆盖率
 pytest --cov=mini_router tests/
 ```
 
-### 7.2 运行 Demo
+### 8.2 运行 Demo
 
 ```bash
-# CLI demo
 mini-router
-
 # 或
 python -m mini_router.cli
 ```
 
-### 7.3 代码风格检查
+### 8.3 代码风格检查
 
 ```bash
-# Ruff lint
 ruff check mini_router/
-
-# 自动修复
 ruff check --fix mini_router/
-
-# 类型检查
 mypy mini_router/
 ```

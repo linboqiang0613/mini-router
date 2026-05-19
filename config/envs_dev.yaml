@@ -1,0 +1,15 @@
+# Mini-Router 开发环境数据库连接配置
+# 仅用于数据库模式的连接信息，不包含 models/signals/decisions 配置
+# 实际路由配置从数据库 mini_router_config 表加载
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  host: "localhost"
+  port: 3306
+  user: "root"
+  database: "mini_router"
+  min_connections: 2
+  max_connections: 5
