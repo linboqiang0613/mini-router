@@ -203,6 +203,19 @@ class ConfigRepository:
         )
         return row["max_version"] if row and row["max_version"] else 0
 
+    async def bump_tenant_version(self, tenant_id: str) -> None:
+        """Increment the version number for a tenant.
+
+        Used when only apikey_pool changes so that sync detects the update.
+
+        Args:
+            tenant_id: Tenant identifier
+        """
+        await self.db.execute(
+            "UPDATE mini_router_tenant SET version = version + 1 WHERE tenant_id = %s",
+            (tenant_id,)
+        )
+
     # === API Key Pool Operations ===
 
     async def get_apikey_pool(self, tenant_id: str) -> list[dict[str, Any]]:
@@ -246,6 +259,18 @@ class ConfigRepository:
             (tenant_id, apikey, order)
         )
         logger.info("apikey_added_to_pool", tenant_id=tenant_id, order=order)
+
+    async def delete_apikey_pool(self, tenant_id: str) -> None:
+        """Delete all API key pool entries for a tenant.
+
+        Args:
+            tenant_id: Tenant identifier
+        """
+        await self.db.execute(
+            "DELETE FROM mini_router_apikey_pool WHERE tenant_id = %s",
+            (tenant_id,)
+        )
+        logger.info("apikey_pool_deleted", tenant_id=tenant_id)
 
     async def update_apikey_status(
         self,
