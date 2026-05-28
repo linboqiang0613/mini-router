@@ -123,13 +123,17 @@ class ConfigRepository:
         Args:
             tenant_data: Tenant configuration dict
         """
-        # Insert tenant (version starts at 1)
+        # Assign version = MAX(version) + 1 so the new tenant always
+        # increases the global max, triggering sync on all instances.
+        max_version = await self.get_tenant_max_version()
+        next_version = max_version + 1
+
         await self.db.execute(
             """
             INSERT INTO mini_router_tenant
             (tenant_id, apikey, name, enabled, base_url_template, timeout,
              apikey_pool_mode, decisions, version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 tenant_data["tenant_id"],
@@ -140,9 +144,10 @@ class ConfigRepository:
                 tenant_data.get("timeout", 120.0),
                 tenant_data.get("apikey_pool_mode", "round_robin"),
                 json.dumps(tenant_data.get("decisions")) if tenant_data.get("decisions") else None,
+                next_version,
             )
         )
-        logger.info("tenant_created", tenant_id=tenant_data["tenant_id"])
+        logger.info("tenant_created", tenant_id=tenant_data["tenant_id"], version=next_version)
 
     async def update_tenant(self, tenant_id: str, updates: dict[str, Any]) -> None:
         """Update tenant configuration.
@@ -202,6 +207,17 @@ class ConfigRepository:
             "SELECT MAX(version) as max_version FROM mini_router_tenant"
         )
         return row["max_version"] if row and row["max_version"] else 0
+
+    async def get_tenant_versions(self) -> dict[str, int]:
+        """Get all tenant_id → version mappings for sync comparison.
+
+        Returns:
+            Dict mapping tenant_id to version number for enabled tenants
+        """
+        rows = await self.db.fetch_all(
+            "SELECT tenant_id, version FROM mini_router_tenant WHERE enabled = TRUE"
+        )
+        return {row["tenant_id"]: row["version"] for row in rows}
 
     async def bump_tenant_version(self, tenant_id: str) -> None:
         """Increment the version number for a tenant.

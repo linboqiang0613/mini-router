@@ -191,6 +191,30 @@ class TestConfigRepositoryTenant:
 
         assert result == 0
 
+    @pytest.mark.asyncio
+    async def test_get_tenant_versions(self, mock_db):
+        """Test getting all tenant_id → version mappings."""
+        mock_db.fetch_all.return_value = [
+            {"tenant_id": "t1", "version": 5},
+            {"tenant_id": "t2", "version": 12},
+        ]
+
+        repo = ConfigRepository(mock_db)
+        result = await repo.get_tenant_versions()
+
+        assert result == {"t1": 5, "t2": 12}
+        mock_db.fetch_all.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_tenant_versions_empty(self, mock_db):
+        """Test getting version mappings when no tenants exist."""
+        mock_db.fetch_all.return_value = []
+
+        repo = ConfigRepository(mock_db)
+        result = await repo.get_tenant_versions()
+
+        assert result == {}
+
 
 class TestConfigRepositoryApiKeyPool:
     """Test API key pool operations."""

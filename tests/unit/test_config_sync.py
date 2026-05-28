@@ -16,7 +16,7 @@ class TestConfigSyncService:
         """Create mock components."""
         repo = MagicMock()
         repo.get_global_version = AsyncMock(return_value=1)
-        repo.get_tenant_max_version = AsyncMock(return_value=5)
+        repo.get_tenant_versions = AsyncMock(return_value={"t1": 5})
 
         tenant_manager = MagicMock()
         tenant_manager.reload = AsyncMock()
@@ -41,7 +41,7 @@ class TestConfigSyncService:
         assert sync.tenant_poll_interval == 10
         assert sync._running == False
         assert sync._global_version == 0
-        assert sync._tenant_version == 0
+        assert sync._tenant_versions == {}
 
     def test_init_with_env_vars(self, mock_components):
         """Test initialization with environment variables."""
@@ -109,7 +109,11 @@ class TestConfigSyncService:
     async def test_poll_tenant_version_change(self, mock_components):
         """Test tenant config poll detects version change."""
         repo, tm, router = mock_components
-        repo.get_tenant_max_version = AsyncMock(side_effect=[15, 15])
+        # DB returns different version snapshot
+        repo.get_tenant_versions = AsyncMock(side_effect=[
+            {"t1": 15},  # first call: new version detected, triggers reload
+            {"t1": 15},  # second call: poll after reload, no change
+        ])
 
         sync = ConfigSyncService(
             repository=repo,
@@ -118,33 +122,71 @@ class TestConfigSyncService:
             tenant_poll_interval=0.1,
         )
 
-        sync._tenant_version = 10
+        sync._tenant_versions = {"t1": 10}
         sync._running = True
 
         await sync._poll_tenant_once()
         sync._running = False
 
         tm.reload.assert_called_once()
-        assert sync._tenant_version == 15
+        assert sync._tenant_versions == {"t1": 15}
 
     @pytest.mark.asyncio
     async def test_poll_tenant_no_change(self, mock_components):
         """Test tenant config poll with no version change."""
         repo, tm, router = mock_components
-        repo.get_tenant_max_version = AsyncMock(return_value=10)
+        repo.get_tenant_versions = AsyncMock(return_value={"t1": 10})
 
         sync = ConfigSyncService(
             repository=repo,
             tenant_manager=tm,
             router=router,
         )
-        sync._tenant_version = 10
+        sync._tenant_versions = {"t1": 10}
         sync._running = True
 
         await sync._poll_tenant_once()
         sync._running = False
 
         tm.reload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_poll_tenant_new_tenant(self, mock_components):
+        """Test tenant config poll detects newly added tenant."""
+        repo, tm, router = mock_components
+        repo.get_tenant_versions = AsyncMock(return_value={"t1": 1, "t2": 1})
+
+        sync = ConfigSyncService(
+            repository=repo,
+            tenant_manager=tm,
+            router=router,
+        )
+        sync._tenant_versions = {"t1": 1}
+        sync._running = True
+
+        await sync._poll_tenant_once()
+        sync._running = False
+
+        tm.reload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_poll_tenant_deleted_tenant(self, mock_components):
+        """Test tenant config poll detects deleted/disabled tenant."""
+        repo, tm, router = mock_components
+        repo.get_tenant_versions = AsyncMock(return_value={"t1": 5})
+
+        sync = ConfigSyncService(
+            repository=repo,
+            tenant_manager=tm,
+            router=router,
+        )
+        sync._tenant_versions = {"t1": 5, "t2": 3}
+        sync._running = True
+
+        await sync._poll_tenant_once()
+        sync._running = False
+
+        tm.reload.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_start_creates_tasks(self, mock_components):
