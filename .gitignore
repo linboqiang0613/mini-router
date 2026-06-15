@@ -8,4 +8,5 @@ __pycache__/
 docs/superpowers/
 docs/innovative_proposal/
 openspec/
-
+.codex/
+AGENTS.md
