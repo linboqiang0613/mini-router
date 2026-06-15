@@ -205,6 +205,66 @@ Authorization: Bearer sk-tenant-001-key
 
 ---
 
+## 请求生命周期日志
+
+路由型请求现在会统一输出两类结构化日志：
+
+- `request_started`
+- `request_finished`
+
+### request_started
+
+在请求进入 `/v1/route` 或 `/v1/chat/completions` 且完成租户认证后打印，包含：
+
+- `request_id`
+- `path`
+- `method`
+- `tenant_id`
+- `stream`
+- `user`
+- `query_preview`：请求内容前 20 个字符
+- `query_length`
+- `timestamp`
+
+### request_finished
+
+在请求真正结束后打印：
+
+- `/v1/route`：路由结果返回时
+- `/v1/chat/completions` 非流式：代理调用完成或报错时
+- `/v1/chat/completions` 流式：流结束或流报错时
+
+主要字段包括：
+
+- `status`
+- `routing`
+  - `selected_model`
+  - `decision_name`
+  - `matched_rules`
+  - `cache_hit`
+  - `signals`
+- `selection`
+  - `strategy`
+  - `candidate_models`
+  - `filtered_candidate_models`
+- `stats`
+  - `latency_seconds`
+  - `ttft`
+  - `tpot`
+  - `chunk_count`
+  - `usage`
+- `result`
+  - `finish_reason`
+  - `error_type`
+  - `error_message`
+
+说明：
+
+- `query_preview` 始终保留前 20 个字符，不因 `pii` 或 `security` 信号命中而屏蔽。
+- 流式路径中的 `chunk_count` 表示统计到的内容块数量，不表示精确 token 数。
+
+---
+
 ## 关键配置影响
 
 ```yaml

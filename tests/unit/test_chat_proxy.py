@@ -1,6 +1,7 @@
 """Tests for chat proxy."""
 
 import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from mini_router.proxy.types import (
     ChatChunk,
@@ -10,6 +11,7 @@ from mini_router.proxy.types import (
     ChatRequest,
     ChatResponse,
 )
+from mini_router.logging_utils import RequestTrace
 
 
 class TestChatTypes:
@@ -151,6 +153,126 @@ class TestChatProxy:
         query = proxy._extract_query(messages)
         assert "You are helpful" in query
         assert "Hi there" in query
+
+    @pytest.mark.asyncio
+    async def test_chat_records_request_finished_trace(self) -> None:
+        """Non-streaming chat should populate and emit completion trace data."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(
+            return_value=MagicMock(
+                selected_model="gpt-4",
+                decision_name="route-test",
+                matched_rules=["code_related"],
+                confidence=0.9,
+                cache_hit=False,
+                cache_response=None,
+                action=MagicMock(value="route"),
+                reject_message=None,
+                signals=None,
+                candidate_models=["gpt-4", "gpt-4o"],
+                filtered_candidate_models=["gpt-4"],
+                selection_strategy="static",
+                selection_metadata={"source": "test"},
+            )
+        )
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock(
+            return_value={
+                "id": "test-123",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Hello"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 3,
+                    "total_tokens": 13,
+                },
+            }
+        )
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id="tenant-1",
+            query="Hello router",
+            stream=False,
+        )
+
+        with patch("mini_router.proxy.chat_proxy.logger.info") as mock_info:
+            response = await proxy.chat(
+                ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=False),
+                trace=trace,
+            )
+
+        assert response.model == "gpt-4"
+        assert trace.status == "completed"
+        assert trace.finish_reason == "chat_completed"
+        assert trace.selection_strategy == "static"
+        assert trace.candidate_models == ["gpt-4", "gpt-4o"]
+        assert trace.filtered_candidate_models == ["gpt-4"]
+        assert trace.usage.total_tokens == 13
+        assert any(call.args[0] == "request_finished" for call in mock_info.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_records_chunk_count_on_completion(self) -> None:
+        """Streaming chat should emit request_finished after stream completion."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(
+            return_value=MagicMock(
+                selected_model="gpt-4",
+                decision_name="route-test",
+                matched_rules=["code_related"],
+                confidence=0.9,
+                cache_hit=False,
+                cache_response=None,
+                action=MagicMock(value="route"),
+                reject_message=None,
+                signals=None,
+                candidate_models=["gpt-4"],
+                filtered_candidate_models=["gpt-4"],
+                selection_strategy="static",
+                selection_metadata={},
+            )
+        )
+        mock_router.record_latency = AsyncMock()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"choices": [{"delta": {"content": "Hello"}}]}
+            yield {"choices": [{"delta": {"content": " world"}}]}
+
+        mock_client = MagicMock()
+        mock_client.chat_completion_stream = mock_stream
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id="tenant-1",
+            query="Hello router",
+            stream=True,
+        )
+
+        with patch("mini_router.proxy.chat_proxy.logger.info") as mock_info:
+            chunks = [
+                chunk
+                async for chunk in proxy.chat_stream(
+                    ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=True),
+                    trace=trace,
+                )
+            ]
+
+        assert len(chunks) == 2
+        assert trace.status == "completed"
+        assert trace.finish_reason == "stream_completed"
+        assert trace.chunk_count == 2
+        assert any(call.args[0] == "request_finished" for call in mock_info.call_args_list)
 
 
 class TestDynamicClient:

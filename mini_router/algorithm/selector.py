@@ -31,7 +31,10 @@ class StaticSelector(ModelSelector):
             raise ValueError("No candidate models available")
 
         if len(candidates) == 1:
-            return SelectionResult(selected_model=candidates[0].model)
+            return SelectionResult(
+                selected_model=candidates[0].model,
+                filtered_candidates=[candidates[0].model],
+            )
 
         # Weight-based selection
         total_weight = sum(c.weight for c in candidates)
@@ -40,6 +43,7 @@ class StaticSelector(ModelSelector):
             return SelectionResult(
                 selected_model=random.choice(candidates).model,
                 confidence=1.0 / len(candidates),
+                filtered_candidates=[c.model for c in candidates],
             )
 
         # Probabilistic selection based on weights
@@ -51,12 +55,14 @@ class StaticSelector(ModelSelector):
                 return SelectionResult(
                     selected_model=candidate.model,
                     confidence=candidate.weight / total_weight,
+                    filtered_candidates=[c.model for c in candidates],
                 )
 
         # Fallback to last candidate
         return SelectionResult(
             selected_model=candidates[-1].model,
             confidence=candidates[-1].weight / total_weight,
+            filtered_candidates=[c.model for c in candidates],
         )
 
 
@@ -83,6 +89,7 @@ class RoundRobinSelector(ModelSelector):
         return SelectionResult(
             selected_model=candidates[index].model,
             confidence=1.0 / len(candidates),
+            filtered_candidates=[c.model for c in candidates],
         )
 
 
@@ -124,7 +131,10 @@ class LatencyAwareSelector(ModelSelector):
             raise ValueError("No candidate models available")
 
         if len(candidates) == 1:
-            return SelectionResult(selected_model=candidates[0].model)
+            return SelectionResult(
+                selected_model=candidates[0].model,
+                filtered_candidates=[candidates[0].model],
+            )
 
         tracker = self._get_tracker()
 
@@ -226,6 +236,7 @@ class LatencyAwareSelector(ModelSelector):
                 "candidates_evaluated": len(scored_candidates),
                 "all_scores": {m: s for m, s in final_scores},
             },
+            filtered_candidates=[c.model for c in candidates],
         )
 
 

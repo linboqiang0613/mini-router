@@ -20,6 +20,7 @@ from mini_router.config.loader import (
     load_config_from_db,
 )
 from mini_router.database import ConfigRepository, ConfigSyncService, DatabaseConnection
+from mini_router.logging_utils import RequestTrace
 from mini_router.proxy import ChatProxy, ChatRequest
 from mini_router.proxy.chat_proxy import AuthenticationError, TenantDisabledError
 from mini_router.router.router import Router, RoutingRequest
@@ -375,12 +376,46 @@ async def route(
         user_id=request.user_id,
         metadata=request.metadata or {},
     )
-
-    result = await router.route(
-        routing_request,
-        decisions=tenant.decisions,
-        selection=tenant.selection,
+    trace = RequestTrace(
+        path="/v1/route",
+        method="POST",
+        tenant_id=tenant.tenant_id,
+        query=request.query,
+        user=request.user_id,
     )
+    logger.info("request_started", **trace.started_event())
+
+    try:
+        result = await router.route(
+            routing_request,
+            decisions=tenant.decisions,
+            selection=tenant.selection,
+        )
+        trace.apply_routing_result(result)
+
+        if result.action == result.action.REJECT:
+            finish_status = "rejected"
+            finish_reason = "request_rejected"
+        elif result.cache_hit:
+            finish_status = "completed"
+            finish_reason = "cache_hit"
+        elif result.selected_model is None:
+            finish_status = "no_match"
+            finish_reason = "no_model_selected"
+        else:
+            finish_status = "completed"
+            finish_reason = "route_completed"
+
+        trace.record_completion(status=finish_status, finish_reason=finish_reason)
+        logger.info("request_finished", **trace.finished_event())
+    except Exception as e:
+        trace.record_completion(
+            status="error",
+            finish_reason="route_error",
+            error=e,
+        )
+        logger.info("request_finished", **trace.finished_event())
+        raise
 
     # Add tenant_id to response metadata
     logger.info(
@@ -608,12 +643,32 @@ async def chat_completions(
     except TenantDisabledError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
+    query = proxy._extract_query(request.messages)
+    trace = RequestTrace(
+        path="/v1/chat/completions",
+        method="POST",
+        tenant_id=tenant.tenant_id,
+        query=query,
+        stream=request.stream,
+        user=request.user,
+    )
+    logger.info("request_started", **trace.started_event())
+
     if request.stream:
         # Return SSE streaming response
         async def generate_sse() -> AsyncGenerator[str, None]:
-            async for chunk in proxy.chat_stream(request, tenant=tenant):
-                yield chunk.to_sse()
-            yield "data: [DONE]\n\n"
+            try:
+                async for chunk in proxy.chat_stream(request, tenant=tenant, trace=trace):
+                    yield chunk.to_sse()
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                trace.record_completion(
+                    status="error",
+                    finish_reason="chat_request_error",
+                    error=e,
+                )
+                logger.info("request_finished", **trace.finished_event())
+                raise
 
         return StreamingResponse(
             generate_sse(),
@@ -626,7 +681,16 @@ async def chat_completions(
         )
     else:
         # Return complete JSON response
-        return await proxy.chat(request, tenant=tenant)
+        try:
+            return await proxy.chat(request, tenant=tenant, trace=trace)
+        except Exception as e:
+            trace.record_completion(
+                status="error",
+                finish_reason="chat_request_error",
+                error=e,
+            )
+            logger.info("request_finished", **trace.finished_event())
+            raise
 
 
 # === Main ===

@@ -493,9 +493,10 @@ class TestChatWithTenantAuth:
         # Track if chat was called with correct tenant
         chat_call_kwargs = {}
 
-        async def mock_chat(self, request, tenant=None):
+        async def mock_chat(self, request, tenant=None, trace=None):
             chat_call_kwargs["request"] = request
             chat_call_kwargs["tenant"] = tenant
+            chat_call_kwargs["trace"] = trace
             return ChatResponse(
                 model="gpt-4",
                 choices=[
@@ -527,6 +528,185 @@ class TestChatWithTenantAuth:
                 # Verify chat was called with tenant
                 assert chat_call_kwargs.get("tenant") is not None
                 assert chat_call_kwargs["tenant"].tenant_id == "valid-tenant"
+                assert chat_call_kwargs["trace"] is not None
+
+    def test_chat_request_lifecycle_logs(self, isolated_manager) -> None:
+        """Chat endpoint should emit request_started and request_finished."""
+        manager = isolated_manager
+
+        tenant = TenantConfig(
+            tenant_id="log-tenant",
+            apikey="sk-log-key",
+            name="Log Tenant",
+            enabled=True,
+            base_url_template="http://api.example.com/{model}/v1",
+        )
+        manager.create(tenant)
+
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatResponse, ChatChoice, ChatMessage
+
+        async def mock_chat(self, request, tenant=None, trace=None):
+            assert trace is not None
+            trace.record_completion(status="completed", finish_reason="chat_completed")
+            mini_router.server.logger.info("request_finished", **trace.finished_event())
+            return ChatResponse(
+                model="gpt-4",
+                choices=[
+                    ChatChoice(
+                        message=ChatMessage(role="assistant", content="Hello!"),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        with patch.object(ChatProxy, "chat", mock_chat):
+            with patch("mini_router.server.logger.info") as mock_log_info:
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "messages": [{"role": "user", "content": "Hello this is a long request preview"}],
+                            "stream": False,
+                        },
+                        headers={"Authorization": "Bearer sk-log-key"},
+                    )
+
+        assert response.status_code == 200
+        event_names = [call.args[0] for call in mock_log_info.call_args_list]
+        assert "request_started" in event_names
+        assert "request_finished" in event_names
+
+    def test_route_request_lifecycle_logs(self, isolated_manager) -> None:
+        """Route endpoint should emit request_started and request_finished with bounded preview."""
+        manager = isolated_manager
+        manager.create(
+            TenantConfig(
+                tenant_id="route-log-tenant",
+                apikey="sk-route-log-key",
+                enabled=True,
+                base_url_template="http://api.example.com/{model}/v1",
+            )
+        )
+
+        with patch("mini_router.server.logger.info") as mock_log_info:
+            client = TestClient(app)
+            response = client.post(
+                "/v1/route",
+                json={"query": "01234567890123456789EXTRA"},
+                headers={"Authorization": "Bearer sk-route-log-key"},
+            )
+
+        assert response.status_code == 200
+        started_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_started"
+        )
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert started_call.kwargs["query_preview"] == "01234567890123456789"
+        assert finished_call.kwargs["query_preview"] == "01234567890123456789"
+        assert finished_call.kwargs["status"] == "completed"
+
+    def test_route_request_logs_no_match_status(self, isolated_manager) -> None:
+        """Route endpoint should not label unmatched routing as completed."""
+        manager = isolated_manager
+        manager.create(
+            TenantConfig(
+                tenant_id="route-no-match-tenant",
+                apikey="sk-route-no-match-key",
+                enabled=True,
+                base_url_template="http://api.example.com/{model}/v1",
+            )
+        )
+        with patch("mini_router.server.logger.info") as mock_log_info:
+            with TestClient(app) as client:
+                mini_router.server.get_router().route.return_value = MagicMock(
+                    selected_model=None,
+                    decision_name=None,
+                    matched_rules=[],
+                    confidence=0.0,
+                    cache_hit=False,
+                    cache_response=None,
+                    action=MagicMock(value="route"),
+                    reject_message=None,
+                    signals=None,
+                    candidate_models=[],
+                    filtered_candidate_models=[],
+                    selection_strategy="static",
+                    selection_metadata={},
+                )
+                response = client.post(
+                    "/v1/route",
+                    json={"query": "unmatched query"},
+                    headers={"Authorization": "Bearer sk-route-no-match-key"},
+                )
+
+        assert response.status_code == 200
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert finished_call.kwargs["status"] == "no_match"
+        assert finished_call.kwargs["result"]["finish_reason"] == "no_model_selected"
+
+    def test_route_request_logs_finished_on_error(self, isolated_manager) -> None:
+        """Route endpoint should emit request_finished when routing raises."""
+        manager = isolated_manager
+        manager.create(
+            TenantConfig(
+                tenant_id="route-error-tenant",
+                apikey="sk-route-error-key",
+                enabled=True,
+                base_url_template="http://api.example.com/{model}/v1",
+            )
+        )
+        with patch("mini_router.server.logger.info") as mock_log_info:
+            with TestClient(app, raise_server_exceptions=False) as client:
+                mini_router.server.get_router().route.side_effect = RuntimeError("route boom")
+                response = client.post(
+                    "/v1/route",
+                    json={"query": "boom"},
+                    headers={"Authorization": "Bearer sk-route-error-key"},
+                )
+
+        assert response.status_code == 500
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert finished_call.kwargs["status"] == "error"
+        assert finished_call.kwargs["result"]["finish_reason"] == "route_error"
+        assert finished_call.kwargs["result"]["error_type"] == "RuntimeError"
+
+    def test_chat_request_logs_finished_on_error(self, isolated_manager) -> None:
+        """Chat endpoint should emit request_finished when routing raises."""
+        manager = isolated_manager
+        manager.create(
+            TenantConfig(
+                tenant_id="chat-error-tenant",
+                apikey="sk-chat-error-key",
+                enabled=True,
+                base_url_template="http://api.example.com/{model}/v1",
+            )
+        )
+        with patch("mini_router.server.logger.info") as mock_log_info:
+            with TestClient(app, raise_server_exceptions=False) as client:
+                mini_router.server.get_router().route.side_effect = RuntimeError("chat route boom")
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": False,
+                    },
+                    headers={"Authorization": "Bearer sk-chat-error-key"},
+                )
+
+        assert response.status_code == 500
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert finished_call.kwargs["status"] == "error"
+        assert finished_call.kwargs["result"]["finish_reason"] == "chat_request_error"
+        assert finished_call.kwargs["result"]["error_type"] == "RuntimeError"
 
     def test_chat_with_invalid_auth_format_returns_401(self, isolated_manager) -> None:
         """Test chat completions with invalid Authorization format returns 401."""

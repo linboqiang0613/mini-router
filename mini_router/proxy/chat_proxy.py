@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import structlog
 
+from mini_router.logging_utils import RequestTrace
 from mini_router.proxy.apikey_selector import ApiKeyPoolSelector
 from mini_router.proxy.strategies import ApiKeyStrategy, create_apikey_strategy
 from mini_router.proxy.types import (
@@ -158,17 +159,17 @@ class ChatProxy:
         self,
         start_time: float,
         first_token_time: float | None,
-        token_count: int,
+        chunk_count: int,
         model: str,
         tenant_id: str | None,
         decision_name: str | None,
-    ) -> None:
+    ) -> tuple[float, float | None, float | None]:
         """Record streaming latency metrics.
 
         Args:
             start_time: Request start time
             first_token_time: First token arrival time
-            token_count: Number of tokens generated
+            chunk_count: Number of streamed content chunks generated
             model: Model name
             tenant_id: Tenant ID (for logging)
             decision_name: Decision name (for logging)
@@ -177,8 +178,8 @@ class ChatProxy:
         total_latency = end_time - start_time
         ttft = first_token_time - start_time if first_token_time else None
         tpot = None
-        if token_count > 0 and first_token_time:
-            tpot = (end_time - first_token_time) / token_count
+        if chunk_count > 0 and first_token_time:
+            tpot = (end_time - first_token_time) / chunk_count
 
         await self.router.record_latency(
             model=model,
@@ -195,14 +196,16 @@ class ChatProxy:
             latency=total_latency,
             ttft=ttft,
             tpot=tpot,
-            tokens=token_count,
+            chunk_count=chunk_count,
         )
+        return total_latency, ttft, tpot
 
     async def chat_stream(
         self,
         request: ChatRequest,
         tenant: TenantConfig | None = None,
         strategy: ApiKeyStrategy | None = None,
+        trace: RequestTrace | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Process a streaming chat request.
 
@@ -241,10 +244,18 @@ class ChatProxy:
             decisions=decisions,
             selection=selection,
         )
+        if trace is not None:
+            trace.apply_routing_result(routing_result)
         selected_model = routing_result.selected_model
         decision_name = routing_result.decision_name
 
         if not selected_model:
+            if trace is not None:
+                trace.record_completion(
+                    status="error",
+                    finish_reason="no_model_selected",
+                )
+                logger.info("request_finished", **trace.finished_event())
             # Return error chunk
             yield ChatChunk(
                 model="unknown",
@@ -263,7 +274,7 @@ class ChatProxy:
         # Record timing
         start_time = time.time()
         first_token_time: float | None = None
-        token_count = 0
+        chunk_count = 0
 
         try:
             # Build kwargs for API call
@@ -324,19 +335,29 @@ class ChatProxy:
                                 delta = choice.get("delta", {})
                                 content = delta.get("content", "")
                                 if content:
-                                    token_count += 1
+                                    chunk_count += 1
 
                             yield self._process_stream_chunk(chunk, selected_model)
 
                         # Success - record latency and exit
-                        await self._record_stream_latency(
+                        total_latency, ttft, tpot = await self._record_stream_latency(
                             start_time,
                             first_token_time,
-                            token_count,
+                            chunk_count,
                             selected_model,
                             tenant.tenant_id,
                             decision_name,
                         )
+                        if trace is not None:
+                            trace.record_completion(
+                                status="completed",
+                                finish_reason="stream_completed",
+                                latency_seconds=total_latency,
+                                ttft=ttft,
+                                tpot=tpot,
+                                chunk_count=chunk_count,
+                            )
+                            logger.info("request_finished", **trace.finished_event())
                         return
 
                     except Exception as e:
@@ -346,7 +367,7 @@ class ChatProxy:
                         current_key = next_key
                         # Reset timing for retry
                         first_token_time = None
-                        token_count = 0
+                        chunk_count = 0
             else:
                 # No tenant - direct stream without strategy
                 async for chunk in self.client.chat_completion_stream(
@@ -364,18 +385,28 @@ class ChatProxy:
                         delta = choice.get("delta", {})
                         content = delta.get("content", "")
                         if content:
-                            token_count += 1
+                            chunk_count += 1
 
                     yield self._process_stream_chunk(chunk, selected_model)
 
-                await self._record_stream_latency(
+                total_latency, ttft, tpot = await self._record_stream_latency(
                     start_time,
                     first_token_time,
-                    token_count,
+                    chunk_count,
                     selected_model,
                     None,
                     decision_name,
                 )
+                if trace is not None:
+                    trace.record_completion(
+                        status="completed",
+                        finish_reason="stream_completed",
+                        latency_seconds=total_latency,
+                        ttft=ttft,
+                        tpot=tpot,
+                        chunk_count=chunk_count,
+                    )
+                    logger.info("request_finished", **trace.finished_event())
 
         except Exception as e:
             logger.error(
@@ -385,6 +416,14 @@ class ChatProxy:
                 error=str(e),
                 error_type=type(e).__name__,
             )
+            if trace is not None:
+                trace.record_completion(
+                    status="error",
+                    finish_reason="stream_error",
+                    chunk_count=chunk_count,
+                    error=e,
+                )
+                logger.info("request_finished", **trace.finished_event())
             yield ChatChunk(
                 model=selected_model or "unknown",
                 choices=[
@@ -403,6 +442,7 @@ class ChatProxy:
         request: ChatRequest,
         tenant: TenantConfig | None = None,
         strategy: ApiKeyStrategy | None = None,
+        trace: RequestTrace | None = None,
     ) -> ChatResponse:
         """Process a non-streaming chat request.
 
@@ -434,10 +474,18 @@ class ChatProxy:
             decisions=decisions,
             selection=selection,
         )
+        if trace is not None:
+            trace.apply_routing_result(routing_result)
         selected_model = routing_result.selected_model
         decision_name = routing_result.decision_name
 
         if not selected_model:
+            if trace is not None:
+                trace.record_completion(
+                    status="error",
+                    finish_reason="no_model_selected",
+                )
+                logger.info("request_finished", **trace.finished_event())
             return ChatResponse(
                 model="unknown",
                 choices=[
@@ -561,6 +609,14 @@ class ChatProxy:
                 latency=total_latency,
                 tokens=usage.completion_tokens if usage else None,
             )
+            if trace is not None:
+                trace.record_completion(
+                    status="completed",
+                    finish_reason="chat_completed",
+                    latency_seconds=total_latency,
+                    usage=usage,
+                )
+                logger.info("request_finished", **trace.finished_event())
 
             return ChatResponse(
                 id=response.get("id", f"chatcmpl-{selected_model}") if response else f"chatcmpl-{selected_model}",
@@ -577,6 +633,13 @@ class ChatProxy:
                 error=str(e),
                 error_type=type(e).__name__,
             )
+            if trace is not None:
+                trace.record_completion(
+                    status="error",
+                    finish_reason="chat_error",
+                    error=e,
+                )
+                logger.info("request_finished", **trace.finished_event())
             return ChatResponse(
                 model=selected_model or "unknown",
                 choices=[

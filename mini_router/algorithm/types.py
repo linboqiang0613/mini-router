@@ -30,6 +30,7 @@ class SelectionResult:
     selected_model: str
     confidence: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
+    filtered_candidates: list[str] = field(default_factory=list)
 
 
 # Import here to avoid circular dependency

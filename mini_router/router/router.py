@@ -49,6 +49,10 @@ class RoutingResult:
     signals: SignalMatches | None = None
     action: DecisionAction = DecisionAction.ROUTE
     reject_message: str | None = None
+    candidate_models: list[str] = field(default_factory=list)
+    filtered_candidate_models: list[str] = field(default_factory=list)
+    selection_strategy: str | None = None
+    selection_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class Router:
@@ -274,6 +278,8 @@ class Router:
                 signals=signals,
                 action=DecisionAction.REJECT,
                 reject_message=decision_result.decision.reject_message,
+                candidate_models=[ref.model for ref in decision_result.decision.model_refs],
+                selection_strategy=active_selection.strategy.value,
             )
 
         # 4. Select model
@@ -284,6 +290,8 @@ class Router:
                 matched_rules=decision_result.matched_rules,
                 signals=signals,
                 confidence=decision_result.confidence,
+                candidate_models=[ref.model for ref in decision_result.decision.model_refs],
+                selection_strategy=active_selection.strategy.value,
             )
 
         # Get latency-aware configuration
@@ -321,6 +329,10 @@ class Router:
             matched_rules=decision_result.matched_rules,
             confidence=min(decision_result.confidence, selection_result.confidence),
             signals=signals,
+            candidate_models=[ref.model for ref in decision_result.decision.model_refs],
+            filtered_candidate_models=selection_result.filtered_candidates,
+            selection_strategy=active_selection.strategy.value,
+            selection_metadata=selection_result.metadata,
         )
 
     def _get_classification_tasks(self) -> list[TaskType]:

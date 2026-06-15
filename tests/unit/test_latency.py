@@ -165,6 +165,7 @@ class TestLatencyAwareSelector:
         # Should select model-a (lower latency)
         assert result.selected_model == "model-a"
         assert result.confidence > 0
+        assert result.filtered_candidates == ["model-a", "model-b"]
 
     @pytest.mark.asyncio
     async def test_select_fallback_to_weight(self, selector: LatencyAwareSelector) -> None:

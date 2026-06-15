@@ -1,118 +1,213 @@
-# Tenant configurations
-# Managed by TenantManager API - do not edit manually
-
 tenants:
-  - tenant_id: "demo-tenant"
-    apikey: "sk-demo-auth-key"          # 认证 API Key (用于调用 /v1/chat/completions)
-    apikey_pool:                        # LLM 调用 API Key 池
-      - "sk-llm-key-1"
-      - "sk-llm-key-2"
-      - "sk-llm-key-3"
-    apikey_pool_mode: "round_robin"     # 或 "fallback" (429降级)
-    name: "Demo Tenant"
-    enabled: true
-    base_url_template: "https://coding.dashscope.aliyuncs.com/llm/{model}/v1"
-    timeout: 120.0                      # 同 config.yaml models.timeout
-    selection:
-      strategy: "latency_aware"
-      latency_aware:
-        tpot_percentile: 50
-        ttft_percentile: 90
-        latency_percentile: 50
-        min_observations: 3
-        fallback_to_weight: true
-        weight_blend: 0.3
-    decisions:                          # 租户专属路由规则
-      # 高优先级: 安全拦截
-      - name: "block_pii"
-        priority: 100
-        rules:
-          type: "signal"
-          signal: "pii"
-          condition: "detected"
-        model_refs: []
-        action: "reject"
-        reject_message: "PII detected in request. Please remove personal information."
-
-      - name: "block_security_threat"
-        priority: 99
-        rules:
-          type: "signal"
-          signal: "security"
-          condition: "detected"
-        model_refs: []
-        action: "reject"
-        reject_message: "Security threat detected. Request blocked."
-
-      # 上下文长度路由
-      - name: "route_long_context"
-        priority: 90
-        rules:
-          type: "signal"
-          signal: "context_length"
-          condition: "long"
-        model_refs:
-          - model: "qwen3-max-2026-01-23"
-            weight: 1.0
-            max_tokens: 32768
-
-      # 复杂度路由
-      - name: "route_complex_query"
-        priority: 50
-        rules:
-          type: "signal"
-          signal: "complexity"
-          condition: "complex"
-        model_refs:
-          - model: "kimi-k2.5"
-            weight: 1.0
-
-      # 专项路由
-      - name: "route_to_code_model"
-        priority: 10
-        rules:
-          type: "keyword"
-          name: "code_related"
-        model_refs:
-          - model: "qwen3-coder-next"
-            weight: 1.0
-          - model: "qwen3-coder-plus"
-            weight: 0.8
-
-      - name: "route_to_math_model"
-        priority: 5
-        rules:
-          type: "keyword"
-          name: "math_related"
-        model_refs:
-          - model: "glm-4.7"
-            weight: 1.0
-
-      # 兜底路由
-      - name: "default_route"
-        priority: 0
-        rules:
-          type: "or"
-          children:
-            - type: "keyword"
-              name: "code_related"
-            - type: "keyword"
-              name: "math_related"
-        model_refs:
-          - model: "qwen3.5-plus"
-            weight: 1.0
-
-      - name: "catch_all"
-        priority: -100
-        rules:
-          type: "or"
-          children:
-            - type: "signal"
-              signal: "complexity"
-              condition: "simple"
-            - type: "signal"
-              signal: "complexity"
-              condition: "complex"
-        model_refs:
-          - model: "qwen3.5-plus"
-            weight: 1.0
+- tenant_id: demo-tenant
+  apikey: sk-demo-auth-key
+  apikey_pool:
+  - sk-llm-key-1
+  - sk-llm-key-2
+  - sk-llm-key-3
+  apikey_pool_mode: round_robin
+  name: Demo Tenant
+  enabled: true
+  base_url_template: https://coding.dashscope.aliyuncs.com/llm/{model}/v1
+  timeout: 120.0
+  decisions:
+  - name: block_pii
+    priority: 100
+    rules:
+      type: signal
+      name: null
+      signal: pii
+      condition: detected
+      children: []
+    model_refs: []
+    action: reject
+    reject_message: PII detected in request. Please remove personal information.
+  - name: block_security_threat
+    priority: 99
+    rules:
+      type: signal
+      name: null
+      signal: security
+      condition: detected
+      children: []
+    model_refs: []
+    action: reject
+    reject_message: Security threat detected. Request blocked.
+  - name: route_long_context
+    priority: 90
+    rules:
+      type: signal
+      name: null
+      signal: context_length
+      condition: long
+      children: []
+    model_refs:
+    - model: qwen3-max-2026-01-23
+      weight: 1.0
+      max_tokens: 32768
+    action: route
+    reject_message: null
+  - name: route_complex_query
+    priority: 50
+    rules:
+      type: signal
+      name: null
+      signal: complexity
+      condition: complex
+      children: []
+    model_refs:
+    - model: kimi-k2.5
+      weight: 1.0
+      max_tokens: null
+    action: route
+    reject_message: null
+  - name: route_to_code_model
+    priority: 10
+    rules:
+      type: keyword
+      name: code_related
+      signal: null
+      condition: null
+      children: []
+    model_refs:
+    - model: qwen3-coder-next
+      weight: 1.0
+      max_tokens: null
+    - model: qwen3-coder-plus
+      weight: 0.8
+      max_tokens: null
+    action: route
+    reject_message: null
+  - name: route_to_math_model
+    priority: 5
+    rules:
+      type: keyword
+      name: math_related
+      signal: null
+      condition: null
+      children: []
+    model_refs:
+    - model: glm-4.7
+      weight: 1.0
+      max_tokens: null
+    action: route
+    reject_message: null
+  - name: default_route
+    priority: 0
+    rules:
+      type: or
+      name: null
+      signal: null
+      condition: null
+      children:
+      - type: keyword
+        name: code_related
+        signal: null
+        condition: null
+        children: []
+      - type: keyword
+        name: math_related
+        signal: null
+        condition: null
+        children: []
+    model_refs:
+    - model: qwen3.5-plus
+      weight: 1.0
+      max_tokens: null
+    action: route
+    reject_message: null
+  - name: catch_all
+    priority: -100
+    rules:
+      type: or
+      name: null
+      signal: null
+      condition: null
+      children:
+      - type: signal
+        name: null
+        signal: complexity
+        condition: simple
+        children: []
+      - type: signal
+        name: null
+        signal: complexity
+        condition: complex
+        children: []
+    model_refs:
+    - model: qwen3.5-plus
+      weight: 1.0
+      max_tokens: null
+    action: route
+    reject_message: null
+  selection:
+    strategy: latency_aware
+    latency_aware:
+      tpot_percentile: 50
+      ttft_percentile: 90
+      latency_percentile: 50
+      min_observations: 3
+      fallback_to_weight: true
+      weight_blend: 0.3
+  created_at: null
+  updated_at: null
+- tenant_id: err-tenant
+  apikey: sk-err
+  apikey_pool: []
+  apikey_pool_mode: round_robin
+  name: null
+  enabled: true
+  base_url_template: http://api.example.com/{model}/v1
+  timeout: 120.0
+  decisions: []
+  selection:
+    strategy: static
+    latency_aware:
+      tpot_percentile: 50
+      ttft_percentile: 90
+      latency_percentile: 50
+      min_observations: 3
+      fallback_to_weight: true
+      weight_blend: 0.5
+  created_at: '2026-06-15T19:11:41.595834'
+  updated_at: '2026-06-15T19:11:41.595834'
+- tenant_id: err-chat-tenant
+  apikey: sk-err-chat
+  apikey_pool: []
+  apikey_pool_mode: round_robin
+  name: null
+  enabled: true
+  base_url_template: http://api.example.com/{model}/v1
+  timeout: 120.0
+  decisions: []
+  selection:
+    strategy: static
+    latency_aware:
+      tpot_percentile: 50
+      ttft_percentile: 90
+      latency_percentile: 50
+      min_observations: 3
+      fallback_to_weight: true
+      weight_blend: 0.5
+  created_at: '2026-06-15T19:11:54.252041'
+  updated_at: '2026-06-15T19:11:54.252041'
+- tenant_id: nomatch-tenant
+  apikey: sk-nomatch
+  apikey_pool: []
+  apikey_pool_mode: round_robin
+  name: null
+  enabled: true
+  base_url_template: http://api.example.com/{model}/v1
+  timeout: 120.0
+  decisions: []
+  selection:
+    strategy: static
+    latency_aware:
+      tpot_percentile: 50
+      ttft_percentile: 90
+      latency_percentile: 50
+      min_observations: 3
+      fallback_to_weight: true
+      weight_blend: 0.5
+  created_at: '2026-06-15T19:12:05.577271'
+  updated_at: '2026-06-15T19:12:05.577271'
