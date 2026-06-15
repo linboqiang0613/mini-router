@@ -63,58 +63,65 @@ class TenantManager:
         self._load_from_yaml()
 
     def _load_from_yaml(self) -> None:
-        """Load tenants from the YAML file."""
+        """Load tenants from YAML file (mutates self, for startup use)."""
+        self._tenants, self._apikey_index, self._apikey_pool = self._build_from_yaml()
+
+    def _build_from_yaml(self) -> tuple[dict[str, TenantConfig], dict[str, str], dict[str, list[str]]]:
+        """Build tenant state from YAML without mutating self.
+
+        Returns:
+            Tuple of (tenants dict, apikey_index dict, apikey_pool dict)
+        """
         path = Path(self.yaml_path)
 
         if not path.exists():
-            # File doesn't exist, start with empty state
-            self._tenants = {}
-            self._apikey_index = {}
-            self._apikey_pool = {}
-            return
+            return {}, {}, {}
 
         with path.open() as f:
             data = yaml.safe_load(f)
 
         if data is None or "tenants" not in data:
-            # Empty file or no tenants key
-            self._tenants = {}
-            self._apikey_index = {}
-            self._apikey_pool = {}
-            return
+            return {}, {}, {}
 
-        # Load tenants
-        self._tenants = {}
-        self._apikey_index = {}
-        self._apikey_pool = {}
+        tenants: dict[str, TenantConfig] = {}
+        apikey_index: dict[str, str] = {}
+        apikey_pool: dict[str, list[str]] = {}
 
         for tenant_data in data.get("tenants", []):
             tenant = TenantConfig(**tenant_data)
-            self._tenants[tenant.tenant_id] = tenant
-            self._apikey_index[tenant.apikey] = tenant.tenant_id
-            # Load apikey_pool from TenantConfig
+            tenants[tenant.tenant_id] = tenant
+            apikey_index[tenant.apikey] = tenant.tenant_id
             if tenant.apikey_pool:
-                self._apikey_pool[tenant.tenant_id] = tenant.apikey_pool
+                apikey_pool[tenant.tenant_id] = tenant.apikey_pool
+
+        return tenants, apikey_index, apikey_pool
 
     async def _load_from_db(self) -> None:
-        """Load tenants from database repository."""
+        """Load tenants from database repository (mutates self, for startup use)."""
+        self._tenants, self._apikey_index, self._apikey_pool = await self._build_from_db()
+
+    async def _build_from_db(self) -> tuple[dict[str, TenantConfig], dict[str, str], dict[str, list[str]]]:
+        """Build tenant state from database without mutating self.
+
+        Returns:
+            Tuple of (tenants dict, apikey_index dict, apikey_pool dict)
+        """
         if not self.repository:
             raise RuntimeError("Repository not set. Cannot load from database.")
 
-        self._tenants = {}
-        self._apikey_index = {}
-        self._apikey_pool = {}
+        tenants: dict[str, TenantConfig] = {}
+        apikey_index: dict[str, str] = {}
+        apikey_pool: dict[str, list[str]] = {}
 
         tenants_data = await self.repository.get_all_tenants()
         for t in tenants_data:
-            # Load apikey pool from separate table first
             pool_data = await self.repository.get_apikey_pool(t["tenant_id"])
             active_keys = [k["apikey"] for k in pool_data if k.get("is_active", True)]
 
             tenant = TenantConfig(
                 tenant_id=t["tenant_id"],
                 apikey=t["apikey"],
-                apikey_pool=active_keys,  # Set apikey_pool from database
+                apikey_pool=active_keys,
                 apikey_pool_mode=t.get("apikey_pool_mode", "round_robin"),
                 name=t.get("name"),
                 enabled=t.get("enabled", True),
@@ -124,11 +131,12 @@ class TenantManager:
                 created_at=t.get("created_at"),
                 updated_at=t.get("updated_at"),
             )
-            self._tenants[tenant.tenant_id] = tenant
-            self._apikey_index[tenant.apikey] = tenant.tenant_id
-            self._apikey_pool[tenant.tenant_id] = active_keys
+            tenants[tenant.tenant_id] = tenant
+            apikey_index[tenant.apikey] = tenant.tenant_id
+            apikey_pool[tenant.tenant_id] = active_keys
 
-        logger.info("tenants_loaded_from_db", count=len(self._tenants))
+        logger.info("tenants_loaded_from_db", count=len(tenants))
+        return tenants, apikey_index, apikey_pool
 
     async def async_load(self) -> None:
         """Load tenants from configured source (YAML or database).
@@ -141,15 +149,19 @@ class TenantManager:
             self._load_from_yaml()
 
     async def reload(self) -> None:
-        """Clear all data and reload from configured source."""
-        self._tenants.clear()
-        self._apikey_index.clear()
-        self._apikey_pool.clear()
+        """Atomically reload all tenants from configured source.
 
+        Builds new state in temporary dicts then swaps atomically so that
+        concurrent requests never see an empty or partial tenant index.
+        """
         if self.repository:
-            await self._load_from_db()
+            new_tenants, new_index, new_pool = await self._build_from_db()
         else:
-            self._load_from_yaml()
+            new_tenants, new_index, new_pool = self._build_from_yaml()
+
+        self._tenants = new_tenants
+        self._apikey_index = new_index
+        self._apikey_pool = new_pool
 
         logger.info("tenants_reloaded", count=len(self._tenants))
 
@@ -453,16 +465,14 @@ class TenantManager:
 
         # Handle apikey_pool update
         if "apikey_pool" in updates:
-            # Delete existing pool and re-add
-            existing_pool = await self.repository.get_apikey_pool(tenant_id)
-            for key_entry in existing_pool:
-                await self.repository.update_apikey_status(
-                    tenant_id, key_entry["apikey_order"], False
-                )
-            # Add new keys
+            # Delete existing pool entries then re-add to avoid duplicate key errors
+            await self.repository.delete_apikey_pool(tenant_id)
             for i, apikey in enumerate(updates["apikey_pool"]):
                 await self.repository.add_apikey_to_pool(tenant_id, apikey, i)
             self._apikey_pool[tenant_id] = list(updates["apikey_pool"])
+            # Bump version so sync detects change on other instances
+            if not db_updates:
+                await self.repository.bump_tenant_version(tenant_id)
 
         # Merge updates and validate with Pydantic
         update_data = tenant.model_dump()

@@ -46,7 +46,7 @@ class ConfigSyncService:
 
         self._running = False
         self._global_version = 0
-        self._tenant_version = 0
+        self._tenant_versions: dict[str, int] = {}
         self._global_task: asyncio.Task | None = None
         self._tenant_task: asyncio.Task | None = None
 
@@ -65,12 +65,12 @@ class ConfigSyncService:
 
         # Initialize version tracking
         self._global_version = await self.repository.get_global_version()
-        self._tenant_version = await self.repository.get_tenant_max_version()
+        self._tenant_versions = await self.repository.get_tenant_versions()
 
         logger.info(
             "sync_service_started",
             initial_global_version=self._global_version,
-            initial_tenant_version=self._tenant_version,
+            initial_tenant_count=len(self._tenant_versions),
         )
 
         # Create polling tasks
@@ -135,16 +135,20 @@ class ConfigSyncService:
             await self._poll_tenant_once()
 
     async def _poll_tenant_once(self) -> None:
-        """Single tenant config poll."""
+        """Single tenant config poll.
+
+        Compares per-tenant version snapshots so that any change — create,
+        update, delete, or disable — is detected reliably across instances.
+        """
         try:
-            version = await self.repository.get_tenant_max_version()
-            if version > self._tenant_version:
+            db_versions = await self.repository.get_tenant_versions()
+            if db_versions != self._tenant_versions:
                 logger.info(
                     "tenant_config_changed",
-                    old_version=self._tenant_version,
-                    new_version=version,
+                    old_keys=list(self._tenant_versions.keys()),
+                    new_keys=list(db_versions.keys()),
                 )
-                self._tenant_version = version
+                self._tenant_versions = db_versions
                 await self.tenant_manager.reload()
         except Exception as e:
             logger.error(

@@ -123,13 +123,17 @@ class ConfigRepository:
         Args:
             tenant_data: Tenant configuration dict
         """
-        # Insert tenant (version starts at 1)
+        # Assign version = MAX(version) + 1 so the new tenant always
+        # increases the global max, triggering sync on all instances.
+        max_version = await self.get_tenant_max_version()
+        next_version = max_version + 1
+
         await self.db.execute(
             """
             INSERT INTO mini_router_tenant
             (tenant_id, apikey, name, enabled, base_url_template, timeout,
              apikey_pool_mode, decisions, version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 tenant_data["tenant_id"],
@@ -140,9 +144,10 @@ class ConfigRepository:
                 tenant_data.get("timeout", 120.0),
                 tenant_data.get("apikey_pool_mode", "round_robin"),
                 json.dumps(tenant_data.get("decisions")) if tenant_data.get("decisions") else None,
+                next_version,
             )
         )
-        logger.info("tenant_created", tenant_id=tenant_data["tenant_id"])
+        logger.info("tenant_created", tenant_id=tenant_data["tenant_id"], version=next_version)
 
     async def update_tenant(self, tenant_id: str, updates: dict[str, Any]) -> None:
         """Update tenant configuration.
@@ -203,6 +208,30 @@ class ConfigRepository:
         )
         return row["max_version"] if row and row["max_version"] else 0
 
+    async def get_tenant_versions(self) -> dict[str, int]:
+        """Get all tenant_id → version mappings for sync comparison.
+
+        Returns:
+            Dict mapping tenant_id to version number for enabled tenants
+        """
+        rows = await self.db.fetch_all(
+            "SELECT tenant_id, version FROM mini_router_tenant WHERE enabled = TRUE"
+        )
+        return {row["tenant_id"]: row["version"] for row in rows}
+
+    async def bump_tenant_version(self, tenant_id: str) -> None:
+        """Increment the version number for a tenant.
+
+        Used when only apikey_pool changes so that sync detects the update.
+
+        Args:
+            tenant_id: Tenant identifier
+        """
+        await self.db.execute(
+            "UPDATE mini_router_tenant SET version = version + 1 WHERE tenant_id = %s",
+            (tenant_id,)
+        )
+
     # === API Key Pool Operations ===
 
     async def get_apikey_pool(self, tenant_id: str) -> list[dict[str, Any]]:
@@ -246,6 +275,18 @@ class ConfigRepository:
             (tenant_id, apikey, order)
         )
         logger.info("apikey_added_to_pool", tenant_id=tenant_id, order=order)
+
+    async def delete_apikey_pool(self, tenant_id: str) -> None:
+        """Delete all API key pool entries for a tenant.
+
+        Args:
+            tenant_id: Tenant identifier
+        """
+        await self.db.execute(
+            "DELETE FROM mini_router_apikey_pool WHERE tenant_id = %s",
+            (tenant_id,)
+        )
+        logger.info("apikey_pool_deleted", tenant_id=tenant_id)
 
     async def update_apikey_status(
         self,

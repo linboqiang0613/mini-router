@@ -441,6 +441,8 @@ class TestTenantManagerDatabase:
         repo.delete_tenant = AsyncMock()
         repo.add_apikey_to_pool = AsyncMock()
         repo.update_apikey_status = AsyncMock()
+        repo.delete_apikey_pool = AsyncMock()
+        repo.bump_tenant_version = AsyncMock()
         return repo
 
     def test_init_with_repository(self, mock_repo):
@@ -706,7 +708,7 @@ class TestTenantManagerDatabase:
 
     @pytest.mark.asyncio
     async def test_async_update_apikey_pool(self, mock_repo):
-        """Test async_update with apikey_pool."""
+        """Test async_update with apikey_pool (delete + re-add)."""
         manager = TenantManager(repository=mock_repo)
         await manager._load_from_db()
 
@@ -716,8 +718,8 @@ class TestTenantManagerDatabase:
 
         assert updated is not None
         assert manager._apikey_pool["test-1"] == ["new-pool-key-1", "new-pool-key-2"]
-        mock_repo.get_apikey_pool.assert_called()
-        mock_repo.add_apikey_to_pool.assert_called()
+        mock_repo.delete_apikey_pool.assert_called_once_with("test-1")
+        assert mock_repo.add_apikey_to_pool.call_count == 2
 
     @pytest.mark.asyncio
     async def test_async_update_not_found(self, mock_repo):
