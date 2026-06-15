@@ -1,0 +1,100 @@
+# Tenant config template for YAML mode.
+# Runtime default path in this project is config/tenants.yaml.
+# Latest spec:
+# - YAML tenants must explicitly contain both decisions and selection
+# - Tenant decisions/selection are the active routing config in YAML mode
+
+tenants:
+  - tenant_id: "demo-tenant"
+    apikey: "sk-demo-auth-key"
+    apikey_pool:
+      - "sk-upstream-key-1"
+      - "sk-upstream-key-2"
+    apikey_pool_mode: "round_robin"
+    name: "Demo Tenant"
+    enabled: true
+    base_url_template: "https://api.openai.com/v1"
+    timeout: 120.0
+
+    decisions:
+      - name: "block_pii"
+        priority: 100
+        rules:
+          type: "signal"
+          signal: "pii"
+          condition: "detected"
+        model_refs: []
+        action: "reject"
+        reject_message: "PII detected in request. Please remove personal information and retry."
+
+      - name: "block_security"
+        priority: 99
+        rules:
+          type: "signal"
+          signal: "security"
+          condition: "detected"
+        model_refs: []
+        action: "reject"
+        reject_message: "Security threat detected. Request blocked."
+
+      - name: "route_long_context"
+        priority: 90
+        rules:
+          type: "signal"
+          signal: "context_length"
+          condition: "long"
+        model_refs:
+          - model: "gpt-4.1"
+            weight: 1.0
+            max_tokens: 128000
+          - model: "claude-sonnet-4"
+            weight: 0.8
+            max_tokens: 200000
+
+      - name: "route_complex_query"
+        priority: 50
+        rules:
+          type: "signal"
+          signal: "complexity"
+          condition: "complex"
+        model_refs:
+          - model: "gpt-4.1"
+            weight: 1.0
+          - model: "claude-sonnet-4"
+            weight: 0.8
+
+      - name: "route_code_query"
+        priority: 10
+        rules:
+          type: "keyword"
+          name: "code_related"
+        model_refs:
+          - model: "gpt-4.1"
+            weight: 1.0
+          - model: "gpt-4.1-mini"
+            weight: 0.7
+
+      - name: "default_route"
+        priority: 0
+        rules:
+          type: "or"
+          children:
+            - type: "signal"
+              signal: "complexity"
+              condition: "simple"
+            - type: "signal"
+              signal: "complexity"
+              condition: "complex"
+        model_refs:
+          - model: "gpt-4.1-mini"
+            weight: 1.0
+
+    selection:
+      strategy: "latency_aware"
+      latency_aware:
+        tpot_percentile: 50
+        ttft_percentile: 90
+        latency_percentile: 50
+        min_observations: 3
+        fallback_to_weight: true
+        weight_blend: 0.5

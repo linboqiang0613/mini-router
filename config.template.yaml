@@ -1,0 +1,84 @@
+# Global config template for YAML mode.
+# Latest spec:
+# - Keep only server/models/signals/cache here
+# - Do NOT put global decisions or selection in this file
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  max_workers: 10
+
+models:
+  # Global upstream endpoint used by signal-layer model calls.
+  base_url: "https://api.openai.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+  timeout: 120.0
+  tokenizer_path: "~/models/Qwen3-tokenizer"
+
+  classifier:
+    intent:
+      model: "gpt-4o-mini"
+      enabled: true
+      timeout: 20.0
+      fallback_label: null
+      extra_params: {}
+
+    pii:
+      model: "gpt-4o-mini"
+      enabled: true
+      timeout: 20.0
+      fallback_label: "detected"
+      extra_params: {}
+
+    security:
+      model: "gpt-4o-mini"
+      enabled: true
+      timeout: 20.0
+      fallback_label: "detected"
+      extra_params: {}
+
+    complexity:
+      model: "gpt-4o-mini"
+      enabled: true
+      timeout: 20.0
+      fallback_label: "complex"
+      extra_params: {}
+
+    context_length:
+      # This classifier is local logic; model is only a placeholder identifier.
+      model: "context-length-classifier"
+      enabled: true
+      timeout: 5.0
+      threshold: 16000
+      fallback_label: "short"
+      extra_params: {}
+
+  embedder:
+    model: "text-embedding-3-small"
+    enabled: false
+
+signals:
+  keyword_rules:
+    - name: "code_related"
+      keywords: ["code", "debug", "python", "java", "golang", "typescript"]
+      operator: "any"
+      case_sensitive: false
+
+    - name: "math_related"
+      keywords: ["math", "equation", "calculate", "formula"]
+      operator: "any"
+      case_sensitive: false
+
+    - name: "translation"
+      keywords: ["translate", "翻译", "language", "语言"]
+      operator: "any"
+      case_sensitive: false
+
+  embedding_rules: []
+
+  categories: []
+
+cache:
+  enabled: true
+  similarity_threshold: 0.95
+  max_entries: 10000
