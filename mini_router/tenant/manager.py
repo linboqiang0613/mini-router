@@ -7,6 +7,7 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
+from mini_router.config.config import SelectionConfig
 from mini_router.tenant.types import TenantConfig
 
 if TYPE_CHECKING:
@@ -88,6 +89,16 @@ class TenantManager:
         apikey_pool: dict[str, list[str]] = {}
 
         for tenant_data in data.get("tenants", []):
+            if "decisions" not in tenant_data:
+                raise ValueError(
+                    f"Tenant '{tenant_data.get('tenant_id', '<unknown>')}' is missing required "
+                    "'decisions' in YAML mode"
+                )
+            if "selection" not in tenant_data:
+                raise ValueError(
+                    f"Tenant '{tenant_data.get('tenant_id', '<unknown>')}' is missing required "
+                    "'selection' in YAML mode"
+                )
             tenant = TenantConfig(**tenant_data)
             tenants[tenant.tenant_id] = tenant
             apikey_index[tenant.apikey] = tenant.tenant_id
@@ -128,6 +139,7 @@ class TenantManager:
                 base_url_template=t["base_url_template"],
                 timeout=t.get("timeout", 120.0),
                 decisions=t.get("decisions") or [],
+                selection=t.get("selection") or SelectionConfig(),
                 created_at=t.get("created_at"),
                 updated_at=t.get("updated_at"),
             )
@@ -321,6 +333,7 @@ class TenantManager:
             "timeout": tenant.timeout,
             "apikey_pool_mode": tenant.apikey_pool_mode,
             "decisions": [d.model_dump() for d in tenant.decisions] if tenant.decisions else None,
+            "selection": tenant.selection.model_dump(mode="json"),
         }
 
         # Persist to database
@@ -453,6 +466,8 @@ class TenantManager:
                     db_updates[key] = value  # Already dict list
                 else:
                     db_updates[key] = [d.model_dump() for d in value] if value else None
+            elif key == "selection":
+                db_updates[key] = value if isinstance(value, dict) else value.model_dump(mode="json")
             elif key == "apikey_pool":
                 # Handle apikey_pool separately
                 continue

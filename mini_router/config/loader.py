@@ -73,7 +73,23 @@ def load_yaml_config(config_path: str) -> RouterConfig:
         raise FileNotFoundError(f"Config file not found: {path}")
 
     logger.info("loading_yaml_config", path=str(path))
-    router_config = RouterConfig.from_yaml(path)
+
+    with path.open() as f:
+        raw_config = yaml.safe_load(f) or {}
+
+    if "decisions" in raw_config:
+        raise ValueError(
+            "YAML mode no longer accepts global 'decisions' in config.yaml; "
+            "move routing decisions into tenant configuration."
+        )
+
+    if "selection" in raw_config:
+        raise ValueError(
+            "YAML mode no longer accepts global 'selection' in config.yaml; "
+            "move selection strategy into tenant configuration."
+        )
+
+    router_config = RouterConfig.from_dict(raw_config)
 
     # YAML mode does not use database
     router_config.database = None

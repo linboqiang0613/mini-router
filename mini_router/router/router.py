@@ -8,7 +8,7 @@ import structlog
 from mini_router.algorithm.selector import Registry
 from mini_router.algorithm.types import SelectionContext
 from mini_router.client import OpenAIClient
-from mini_router.config.config import Decision, DecisionAction, RouterConfig
+from mini_router.config.config import Decision, DecisionAction, RouterConfig, SelectionConfig
 from mini_router.decision.engine import Engine
 from mini_router.metrics.latency import LatencyTracker
 from mini_router.plugin.cache import CacheEntry, MemoryCache, SemanticCache
@@ -194,6 +194,7 @@ class Router:
         self,
         request: RoutingRequest,
         decisions: list[Decision] | None = None,
+        selection: SelectionConfig | None = None,
     ) -> RoutingResult:
         """
         Route a query through all layers.
@@ -202,6 +203,7 @@ class Router:
             request: The routing request containing the query.
             decisions: Optional tenant-specific decisions. If provided, these
                 override the router's default decisions for this request.
+            selection: Optional tenant-specific model selection configuration.
 
         Flow:
         1. Check cache
@@ -210,6 +212,8 @@ class Router:
         4. Select model
         5. Return result
         """
+        active_selection = selection or self.config.selection
+
         # 1. Check cache
         if isinstance(self.cache, SemanticCache):
             cache_entry = await self.cache.get_similar(request.query)
@@ -244,7 +248,7 @@ class Router:
             # Create temporary engine for tenant-specific decisions
             tenant_engine = Engine(
                 decisions=decisions,
-                strategy=self.config.selection.strategy.value,
+                strategy=active_selection.strategy.value,
             )
             decision_result = tenant_engine.evaluate(signals)
         else:
@@ -283,7 +287,7 @@ class Router:
             )
 
         # Get latency-aware configuration
-        latency_config = self.config.selection.latency_aware
+        latency_config = active_selection.latency_aware
 
         selection_context = SelectionContext(
             query=request.query,
@@ -300,7 +304,7 @@ class Router:
         )
 
         selection_result = await self.selector_registry.select(
-            self.config.selection.strategy, selection_context
+            active_selection.strategy, selection_context
         )
 
         logger.info(

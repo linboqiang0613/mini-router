@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from mini_router.config.config import Decision
+from mini_router.config.config import Decision, SelectionConfig
 
 
 class TenantConfig(BaseModel):
@@ -31,6 +31,10 @@ class TenantConfig(BaseModel):
     decisions: list[Decision] = Field(
         default_factory=list, description="Tenant-specific routing decisions"
     )
+    selection: SelectionConfig = Field(
+        default_factory=SelectionConfig,
+        description="Tenant-specific model selection strategy",
+    )
     created_at: datetime | None = Field(None, description="Creation timestamp")
     updated_at: datetime | None = Field(None, description="Last update timestamp")
 
@@ -46,7 +50,8 @@ class TenantCreateRequest(BaseModel):
     enabled: bool = True
     base_url_template: str
     timeout: float = 120.0
-    decisions: list[Decision] = Field(default_factory=list)
+    decisions: list[Decision]
+    selection: SelectionConfig
 
 
 class TenantUpdateRequest(BaseModel):
@@ -60,6 +65,7 @@ class TenantUpdateRequest(BaseModel):
     base_url_template: str | None = None
     timeout: float | None = None
     decisions: list[Decision] | None = None
+    selection: SelectionConfig | None = None
 
 
 class TenantResponse(BaseModel):
@@ -74,6 +80,7 @@ class TenantResponse(BaseModel):
     base_url_template: str
     timeout: float
     decisions: list[Decision]
+    selection: SelectionConfig
     created_at: datetime | None
     updated_at: datetime | None
 
@@ -94,6 +101,7 @@ class TenantResponse(BaseModel):
             base_url_template=config.base_url_template,
             timeout=config.timeout,
             decisions=config.decisions,
+            selection=config.selection,
             created_at=config.created_at,
             updated_at=config.updated_at,
         )

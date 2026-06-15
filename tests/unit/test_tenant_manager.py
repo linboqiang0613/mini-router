@@ -62,6 +62,43 @@ class TestTenantManagerLoadSave:
         finally:
             Path(temp_path).unlink()
 
+    def test_load_rejects_yaml_tenant_without_decisions(self) -> None:
+        """YAML mode should reject tenants missing decisions."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("tenants:\n")
+            f.write("  - tenant_id: broken\n")
+            f.write("    apikey: broken-key\n")
+            f.write("    base_url_template: https://api.example.com\n")
+            f.write("    selection:\n")
+            f.write("      strategy: static\n")
+            f.flush()
+            temp_path = f.name
+
+        try:
+            manager = TenantManager(config_path=temp_path)
+            with pytest.raises(ValueError, match="missing required 'decisions'"):
+                manager.load()
+        finally:
+            Path(temp_path).unlink()
+
+    def test_load_rejects_yaml_tenant_without_selection(self) -> None:
+        """YAML mode should reject tenants missing selection."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("tenants:\n")
+            f.write("  - tenant_id: broken\n")
+            f.write("    apikey: broken-key\n")
+            f.write("    base_url_template: https://api.example.com\n")
+            f.write("    decisions: []\n")
+            f.flush()
+            temp_path = f.name
+
+        try:
+            manager = TenantManager(config_path=temp_path)
+            with pytest.raises(ValueError, match="missing required 'selection'"):
+                manager.load()
+        finally:
+            Path(temp_path).unlink()
+
 
 class TestTenantManagerCRUD:
     """Tests for TenantManager CRUD operations."""
@@ -517,6 +554,9 @@ class TestTenantManagerDatabase:
             f.write("    apikey: yaml-key\n")
             f.write("    base_url_template: https://api.example.com\n")
             f.write("    apikey_pool: ['pool-key-1', 'pool-key-2']\n")
+            f.write("    selection:\n")
+            f.write("      strategy: static\n")
+            f.write("    decisions: []\n")
             f.flush()
             temp_path = f.name
 
@@ -557,6 +597,9 @@ class TestTenantManagerDatabase:
             f.write("  - tenant_id: reload-test\n")
             f.write("    apikey: reload-key\n")
             f.write("    base_url_template: https://api.example.com\n")
+            f.write("    selection:\n")
+            f.write("      strategy: static\n")
+            f.write("    decisions: []\n")
             f.flush()
             temp_path = f.name
 

@@ -13,6 +13,15 @@ tenants:
     enabled: true
     base_url_template: "https://coding.dashscope.aliyuncs.com/llm/{model}/v1"
     timeout: 120.0                      # 同 config.yaml models.timeout
+    selection:
+      strategy: "latency_aware"
+      latency_aware:
+        tpot_percentile: 50
+        ttft_percentile: 90
+        latency_percentile: 50
+        min_observations: 3
+        fallback_to_weight: true
+        weight_blend: 0.3
     decisions:                          # 租户专属路由规则
       # 高优先级: 安全拦截
       - name: "block_pii"

@@ -81,6 +81,7 @@ class ConfigRepository:
         )
         for row in rows:
             row["decisions"] = self._parse_json_field(row.get("decisions"))
+            row["selection"] = self._parse_json_field(row.get("selection"))
         return rows
 
     async def get_tenant_by_id(self, tenant_id: str) -> dict[str, Any] | None:
@@ -98,6 +99,7 @@ class ConfigRepository:
         )
         if row:
             row["decisions"] = self._parse_json_field(row.get("decisions"))
+            row["selection"] = self._parse_json_field(row.get("selection"))
         return row
 
     async def get_tenant_by_apikey(self, apikey: str) -> dict[str, Any] | None:
@@ -115,6 +117,7 @@ class ConfigRepository:
         )
         if row:
             row["decisions"] = self._parse_json_field(row.get("decisions"))
+            row["selection"] = self._parse_json_field(row.get("selection"))
         return row
 
     async def create_tenant(self, tenant_data: dict[str, Any]) -> None:
@@ -132,8 +135,8 @@ class ConfigRepository:
             """
             INSERT INTO mini_router_tenant
             (tenant_id, apikey, name, enabled, base_url_template, timeout,
-             apikey_pool_mode, decisions, version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             apikey_pool_mode, decisions, selection, version)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 tenant_data["tenant_id"],
@@ -144,6 +147,7 @@ class ConfigRepository:
                 tenant_data.get("timeout", 120.0),
                 tenant_data.get("apikey_pool_mode", "round_robin"),
                 json.dumps(tenant_data.get("decisions")) if tenant_data.get("decisions") else None,
+                json.dumps(tenant_data.get("selection")) if tenant_data.get("selection") else None,
                 next_version,
             )
         )
@@ -164,6 +168,9 @@ class ConfigRepository:
                 continue  # Skip immutable fields
             if key == "decisions":
                 update_fields.append("decisions = %s")
+                params.append(json.dumps(value) if value else None)
+            elif key == "selection":
+                update_fields.append("selection = %s")
                 params.append(json.dumps(value) if value else None)
             else:
                 update_fields.append(f"{key} = %s")

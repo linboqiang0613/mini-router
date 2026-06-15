@@ -6,10 +6,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from mini_router.database.config import DatabaseConfig
 from mini_router.database.connection import DatabaseConnection
+import mini_router.database.connection as connection_module
 
 
 class TestDatabaseConnection:
     """Test DatabaseConnection class."""
+
+    @pytest.fixture(autouse=True)
+    def mock_aiomysql(self, monkeypatch):
+        """Provide a fake aiomysql module for connection tests."""
+        fake_aiomysql = MagicMock()
+        fake_aiomysql.create_pool = AsyncMock()
+        fake_aiomysql.DictCursor = object()
+        monkeypatch.setattr(connection_module, "aiomysql", fake_aiomysql, raising=False)
+        monkeypatch.setattr(connection_module, "AIOMYSQL_AVAILABLE", True)
+        return fake_aiomysql
 
     def test_init(self):
         """Test initialization."""
@@ -27,9 +38,9 @@ class TestDatabaseConnection:
         assert conn.is_connected == False
 
     @pytest.mark.asyncio
-    async def test_connect_creates_pool(self):
+    async def test_connect_creates_pool(self, mock_aiomysql):
         """Test connect creates connection pool."""
-        config = DatabaseConfig(enabled=True, host="localhost")
+        config = DatabaseConfig(host="localhost")
         conn = DatabaseConnection(config)
 
         # Mock aiomysql.create_pool
@@ -37,22 +48,21 @@ class TestDatabaseConnection:
         mock_pool.close = MagicMock()
         mock_pool.wait_closed = AsyncMock()
 
-        with patch("aiomysql.create_pool", new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = mock_pool
-            await conn.connect()
+        mock_aiomysql.create_pool.return_value = mock_pool
+        await conn.connect()
 
-            mock_create.assert_called_once_with(
-                host="localhost",
-                port=3306,
-                user="root",
-                password="",
-                db="mini_router",
-                charset="utf8mb4",
-                minsize=2,
-                maxsize=10,
-                autocommit=True,
-            )
-            assert conn.is_connected == True
+        mock_aiomysql.create_pool.assert_called_once_with(
+            host="localhost",
+            port=3306,
+            user="root",
+            password="",
+            db="mini_router",
+            charset="utf8mb4",
+            minsize=2,
+            maxsize=10,
+            autocommit=True,
+        )
+        assert conn.is_connected == True
 
     @pytest.mark.asyncio
     async def test_close_closes_pool(self):

@@ -223,39 +223,42 @@ class ChatProxy:
         # Extract query from last user message
         query = self._extract_query(request.messages)
 
-        # Route if model not specified
         if request.model:
-            selected_model = request.model
-            decision_name = None
-        else:
-            # Use tenant decisions if provided
-            decisions = tenant.decisions if tenant else None
-            routing_result = await self.router.route(
-                RoutingRequest(
-                    query=query,
-                    user_id=request.user,
-                    metadata=request.metadata or {},
-                ),
-                decisions=decisions,
+            logger.info(
+                "requested_model_ignored",
+                requested_model=request.model,
+                tenant_id=tenant.tenant_id if tenant else None,
             )
-            selected_model = routing_result.selected_model
-            decision_name = routing_result.decision_name
 
-            if not selected_model:
-                # Return error chunk
-                yield ChatChunk(
-                    model="unknown",
-                    choices=[
-                        ChatChoice(
-                            delta=ChatChoiceDelta(
-                                role="assistant",
-                                content="Error: No model selected for routing.",
-                            ),
-                            finish_reason="error",
-                        )
-                    ],
-                )
-                return
+        decisions = tenant.decisions if tenant else None
+        selection = tenant.selection if tenant else None
+        routing_result = await self.router.route(
+            RoutingRequest(
+                query=query,
+                user_id=request.user,
+                metadata=request.metadata or {},
+            ),
+            decisions=decisions,
+            selection=selection,
+        )
+        selected_model = routing_result.selected_model
+        decision_name = routing_result.decision_name
+
+        if not selected_model:
+            # Return error chunk
+            yield ChatChunk(
+                model="unknown",
+                choices=[
+                    ChatChoice(
+                        delta=ChatChoiceDelta(
+                            role="assistant",
+                            content="Error: No model selected for routing.",
+                        ),
+                        finish_reason="error",
+                    )
+                ],
+            )
+            return
 
         # Record timing
         start_time = time.time()
@@ -413,36 +416,40 @@ class ChatProxy:
         # Extract query from last user message
         query = self._extract_query(request.messages)
 
-        # Route if model not specified
         if request.model:
-            selected_model = request.model
-            decision_name = None
-        else:
-            decisions = tenant.decisions if tenant else None
-            routing_result = await self.router.route(
-                RoutingRequest(
-                    query=query,
-                    user_id=request.user,
-                    metadata=request.metadata or {},
-                ),
-                decisions=decisions,
+            logger.info(
+                "requested_model_ignored",
+                requested_model=request.model,
+                tenant_id=tenant.tenant_id if tenant else None,
             )
-            selected_model = routing_result.selected_model
-            decision_name = routing_result.decision_name
 
-            if not selected_model:
-                return ChatResponse(
-                    model="unknown",
-                    choices=[
-                        ChatChoice(
-                            message=ChatMessage(
-                                role="assistant",
-                                content="Error: No model selected for routing.",
-                            ),
-                            finish_reason="error",
-                        )
-                    ],
-                )
+        decisions = tenant.decisions if tenant else None
+        selection = tenant.selection if tenant else None
+        routing_result = await self.router.route(
+            RoutingRequest(
+                query=query,
+                user_id=request.user,
+                metadata=request.metadata or {},
+            ),
+            decisions=decisions,
+            selection=selection,
+        )
+        selected_model = routing_result.selected_model
+        decision_name = routing_result.decision_name
+
+        if not selected_model:
+            return ChatResponse(
+                model="unknown",
+                choices=[
+                    ChatChoice(
+                        message=ChatMessage(
+                            role="assistant",
+                            content="Error: No model selected for routing.",
+                        ),
+                        finish_reason="error",
+                    )
+                ],
+            )
 
         start_time = time.time()
 

@@ -531,6 +531,56 @@ class TestTenantAuthentication:
         assert client_call_args[1]["api_key"] == "tenant-apikey"
 
     @pytest.mark.asyncio
+    async def test_chat_ignores_requested_model_and_routes(self) -> None:
+        """Chat should ignore request.model and still route through tenant policy."""
+        from unittest.mock import AsyncMock, MagicMock
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatRequest, ChatMessage
+        from mini_router.tenant.types import TenantConfig
+
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(
+            return_value=MagicMock(
+                selected_model="tenant-selected-model",
+                decision_name="tenant-decision",
+                confidence=0.9,
+            )
+        )
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock(
+            return_value={
+                "id": "test-123",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Hello"}}
+                ],
+            }
+        )
+
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="tenant-apikey",
+            name="Test Tenant",
+            enabled=True,
+            base_url_template="http://tenant-api.com/llm/{model}/v1",
+        )
+
+        proxy = ChatProxy(mock_router, mock_client)
+        request = ChatRequest(
+            model="caller-requested-model",
+            messages=[ChatMessage(role="user", content="Hello")],
+            stream=False,
+        )
+
+        response = await proxy.chat(request, tenant=tenant)
+
+        mock_router.route.assert_called_once()
+        assert response.model == "tenant-selected-model"
+        client_call_args = mock_client.chat_completion.call_args
+        assert client_call_args[1]["model"] == "tenant-selected-model"
+
+    @pytest.mark.asyncio
     async def test_chat_without_tenant(self) -> None:
         """Test chat method works without tenant (backward compatibility)."""
         from unittest.mock import AsyncMock, MagicMock, patch

@@ -13,6 +13,22 @@ from mini_router.tenant.manager import TenantManager
 from mini_router.tenant.types import TenantConfig
 
 
+def tenant_payload(**overrides):
+    """Build a valid tenant payload for API tests."""
+    payload = {
+        "tenant_id": "test-tenant",
+        "apikey": "sk-test-key",
+        "name": "Test Tenant",
+        "enabled": True,
+        "base_url_template": "http://api.example.com/{model}/v1",
+        "timeout": 60.0,
+        "selection": {"strategy": "static"},
+        "decisions": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
 @pytest.fixture
 def temp_config_file():
     """Create a temporary config file for tenant storage."""
@@ -25,7 +41,7 @@ def temp_config_file():
 
 
 @pytest.fixture
-def isolated_manager(temp_config_file):
+def isolated_manager(temp_config_file, monkeypatch):
     """Create an isolated tenant manager for each test."""
     # Reset global state before each test
     mini_router.server._tenant_manager = None
@@ -36,8 +52,29 @@ def isolated_manager(temp_config_file):
     manager = TenantManager(config_path=temp_config_file)
     manager.load()
 
-    # Set global state directly (since endpoints don't use Depends())
-    mini_router.server._tenant_manager = manager
+    mock_config = MagicMock()
+    mock_config.decisions = []
+    mock_router = MagicMock()
+    mock_router.client = MagicMock()
+    mock_router.route = AsyncMock(
+        return_value=MagicMock(
+            selected_model="tenant-model",
+            decision_name="tenant-decision",
+            matched_rules=["rule-1"],
+            confidence=0.9,
+            cache_hit=False,
+            cache_response=None,
+            action=MagicMock(value="route"),
+            reject_message=None,
+            signals=None,
+        )
+    )
+
+    monkeypatch.setattr(mini_router.server, "load_yaml_config", MagicMock(return_value=mock_config))
+    monkeypatch.setattr(mini_router.server, "TenantManager", MagicMock(return_value=manager))
+    monkeypatch.setattr(mini_router.server, "Router", MagicMock(return_value=mock_router))
+    mini_router.server.app.state.config_path = "test-config.yaml"
+    mini_router.server.app.state.env = "dev"
 
     yield manager
 
@@ -45,6 +82,7 @@ def isolated_manager(temp_config_file):
     mini_router.server._tenant_manager = None
     mini_router.server._router = None
     mini_router.server._chat_proxy = None
+    mini_router.server.app.state.config_path = None
 
 
 class TestTenantAPI:
@@ -57,14 +95,10 @@ class TestTenantAPI:
         with TestClient(app) as client:
             response = client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "test-tenant-1",
-                    "apikey": "sk-test-key-001",
-                    "name": "Test Tenant",
-                    "enabled": True,
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                    "timeout": 60.0,
-                },
+                json=tenant_payload(
+                    tenant_id="test-tenant-1",
+                    apikey="sk-test-key-001",
+                ),
             )
 
             assert response.status_code == 201
@@ -88,23 +122,21 @@ class TestTenantAPI:
             # Create first tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "duplicate-test",
-                    "apikey": "sk-unique-key-001",
-                    "name": "First Tenant",
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="duplicate-test",
+                    apikey="sk-unique-key-001",
+                    name="First Tenant",
+                ),
             )
 
             # Try to create duplicate with same tenant_id
             response = client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "duplicate-test",
-                    "apikey": "sk-unique-key-002",
-                    "name": "Second Tenant",
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="duplicate-test",
+                    apikey="sk-unique-key-002",
+                    name="Second Tenant",
+                ),
             )
 
             assert response.status_code == 400
@@ -118,23 +150,21 @@ class TestTenantAPI:
             # Create first tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "tenant-a",
-                    "apikey": "sk-same-key-123",
-                    "name": "Tenant A",
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="tenant-a",
+                    apikey="sk-same-key-123",
+                    name="Tenant A",
+                ),
             )
 
             # Try to create with duplicate apikey
             response = client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "tenant-b",
-                    "apikey": "sk-same-key-123",  # Duplicate apikey
-                    "name": "Tenant B",
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="tenant-b",
+                    apikey="sk-same-key-123",
+                    name="Tenant B",
+                ),
             )
 
             assert response.status_code == 400
@@ -148,21 +178,21 @@ class TestTenantAPI:
             # Create multiple tenants
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "tenant-list-1",
-                    "apikey": "sk-list-key-001",
-                    "name": "List Tenant 1",
-                    "base_url_template": "http://api1.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="tenant-list-1",
+                    apikey="sk-list-key-001",
+                    name="List Tenant 1",
+                    base_url_template="http://api1.example.com/{model}/v1",
+                ),
             )
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "tenant-list-2",
-                    "apikey": "sk-list-key-002",
-                    "name": "List Tenant 2",
-                    "base_url_template": "http://api2.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="tenant-list-2",
+                    apikey="sk-list-key-002",
+                    name="List Tenant 2",
+                    base_url_template="http://api2.example.com/{model}/v1",
+                ),
             )
 
             response = client.get("/v1/tenants")
@@ -194,14 +224,12 @@ class TestTenantAPI:
             # Create a tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "get-test-tenant",
-                    "apikey": "sk-get-key-123",
-                    "name": "Get Test Tenant",
-                    "enabled": True,
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                    "timeout": 90.0,
-                },
+                json=tenant_payload(
+                    tenant_id="get-test-tenant",
+                    apikey="sk-get-key-123",
+                    name="Get Test Tenant",
+                    timeout=90.0,
+                ),
             )
 
             response = client.get("/v1/tenants/get-test-tenant")
@@ -233,14 +261,12 @@ class TestTenantAPI:
             # Create a tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "update-test-tenant",
-                    "apikey": "sk-update-key-123",
-                    "name": "Original Name",
-                    "enabled": True,
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                    "timeout": 60.0,
-                },
+                json=tenant_payload(
+                    tenant_id="update-test-tenant",
+                    apikey="sk-update-key-123",
+                    name="Original Name",
+                    timeout=60.0,
+                ),
             )
 
             # Update the tenant
@@ -272,12 +298,11 @@ class TestTenantAPI:
             # Create a tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "apikey-update-test",
-                    "apikey": "sk-old-apikey",
-                    "name": "API Key Update Test",
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="apikey-update-test",
+                    apikey="sk-old-apikey",
+                    name="API Key Update Test",
+                ),
             )
 
             # Update the apikey
@@ -317,12 +342,11 @@ class TestTenantAPI:
             # Create a tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "empty-update-test",
-                    "apikey": "sk-empty-update",
-                    "name": "Empty Update Test",
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="empty-update-test",
+                    apikey="sk-empty-update",
+                    name="Empty Update Test",
+                ),
             )
 
             # Update with empty body (all None values)
@@ -344,12 +368,11 @@ class TestTenantAPI:
             # Create a tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "delete-test-tenant",
-                    "apikey": "sk-delete-key-123",
-                    "name": "Delete Test Tenant",
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="delete-test-tenant",
+                    apikey="sk-delete-key-123",
+                    name="Delete Test Tenant",
+                ),
             )
 
             # Delete the tenant
@@ -400,13 +423,11 @@ class TestChatWithTenantAuth:
             # Create a tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "auth-test-tenant",
-                    "apikey": "sk-valid-key-123",
-                    "name": "Auth Test Tenant",
-                    "enabled": True,
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="auth-test-tenant",
+                    apikey="sk-valid-key-123",
+                    name="Auth Test Tenant",
+                ),
             )
 
             response = client.post(
@@ -429,13 +450,12 @@ class TestChatWithTenantAuth:
             # Create a disabled tenant
             client.post(
                 "/v1/tenants",
-                json={
-                    "tenant_id": "disabled-tenant",
-                    "apikey": "sk-disabled-key-123",
-                    "name": "Disabled Tenant",
-                    "enabled": False,
-                    "base_url_template": "http://api.example.com/{model}/v1",
-                },
+                json=tenant_payload(
+                    tenant_id="disabled-tenant",
+                    apikey="sk-disabled-key-123",
+                    name="Disabled Tenant",
+                    enabled=False,
+                ),
             )
 
             response = client.post(
@@ -540,3 +560,37 @@ class TestChatWithTenantAuth:
             )
 
             assert response.status_code == 401
+
+
+class TestRouteWithTenantAuth:
+    """Tests for routing endpoint authentication."""
+
+    def test_route_without_auth_returns_401(self, isolated_manager) -> None:
+        """Route endpoint should reject missing auth."""
+        client = TestClient(app)
+        response = client.post("/v1/route", json={"query": "hello"})
+
+        assert response.status_code == 401
+        assert "Authorization" in response.json()["detail"]
+
+    def test_route_with_disabled_tenant_returns_403(self, isolated_manager) -> None:
+        """Route endpoint should reject disabled tenant."""
+        manager = isolated_manager
+        manager.create(
+            TenantConfig(
+                tenant_id="disabled-route-tenant",
+                apikey="sk-disabled-route",
+                enabled=False,
+                base_url_template="http://api.example.com/{model}/v1",
+            )
+        )
+
+        client = TestClient(app)
+        response = client.post(
+            "/v1/route",
+            json={"query": "hello"},
+            headers={"Authorization": "Bearer sk-disabled-route"},
+        )
+
+        assert response.status_code == 403
+        assert "disabled" in response.json()["detail"].lower()

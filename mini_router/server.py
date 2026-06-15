@@ -353,29 +353,22 @@ async def route(
     """
     Route a query to the appropriate model.
 
-    If Authorization header (Bearer token) is provided, uses tenant-specific decisions.
-    Otherwise, uses global router decisions.
-
     This endpoint only returns routing decisions, does not forward to LLM.
     """
     router = get_router()
     proxy = get_chat_proxy()
     manager = get_tenant_manager()
 
-    # Determine decisions to use
-    decisions = None
-    tenant_id = None
+    apikey = proxy.extract_apikey(authorization)
+    if apikey is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
-    if authorization:
-        # Extract apikey and authenticate tenant
-        apikey = proxy.extract_apikey(authorization)
-        if apikey:
-            tenant = manager.get_by_apikey(apikey)
-            if tenant:
-                if not tenant.enabled:
-                    raise HTTPException(status_code=403, detail="Tenant is disabled")
-                decisions = tenant.decisions
-                tenant_id = tenant.tenant_id
+    try:
+        tenant = proxy.authenticate_tenant(manager, apikey)
+    except AuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except TenantDisabledError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     routing_request = RoutingRequest(
         query=request.query,
@@ -383,8 +376,11 @@ async def route(
         metadata=request.metadata or {},
     )
 
-    # Route with tenant decisions or global decisions
-    result = await router.route(routing_request, decisions=decisions)
+    result = await router.route(
+        routing_request,
+        decisions=tenant.decisions,
+        selection=tenant.selection,
+    )
 
     # Add tenant_id to response metadata
     logger.info(
@@ -392,7 +388,7 @@ async def route(
         query=request.query[:50],
         decision=result.decision_name,
         model=result.selected_model,
-        tenant=tenant_id,
+        tenant=tenant.tenant_id,
     )
 
     return RouteResponse(

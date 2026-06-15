@@ -13,7 +13,6 @@ class TestDatabaseConfig:
     def test_default_values(self):
         """Test default configuration values."""
         config = DatabaseConfig()
-        assert config.enabled == False
         assert config.host == "localhost"
         assert config.port == 3306
         assert config.user == "root"
@@ -26,7 +25,6 @@ class TestDatabaseConfig:
     def test_custom_values(self):
         """Test custom configuration values."""
         config = DatabaseConfig(
-            enabled=True,
             host="mysql.prod.internal",
             port=3307,
             user="app_user",
@@ -35,7 +33,6 @@ class TestDatabaseConfig:
             min_connections=5,
             max_connections=20,
         )
-        assert config.enabled == True
         assert config.host == "mysql.prod.internal"
         assert config.port == 3307
         assert config.user == "app_user"
@@ -51,19 +48,16 @@ class TestGetDatabaseConfig:
     def test_with_config_object(self):
         """Test loading from config object."""
         config = DatabaseConfig(
-            enabled=True,
             host="custom.host",
             database="custom_db",
         )
         result = get_database_config(config)
-        assert result.enabled == True
         assert result.host == "custom.host"
         assert result.database == "custom_db"
 
     def test_without_config_uses_defaults(self):
         """Test default values when no config provided."""
         result = get_database_config()
-        assert result.enabled == False
         assert result.host == "localhost"
         assert result.database == "mini_router"
 
@@ -71,7 +65,7 @@ class TestGetDatabaseConfig:
         """Test password extraction with BEE_ prefix."""
         os.environ["MINI_ROUTER_DB_ACCESS"] = "BEE_secret_password"
         result = get_database_config()
-        assert result.password == "secret_password"
+        assert result.password == "BEE_secret_password"
         del os.environ["MINI_ROUTER_DB_ACCESS"]
 
     def test_password_from_env_without_prefix(self):

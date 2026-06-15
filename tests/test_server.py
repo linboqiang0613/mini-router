@@ -12,8 +12,7 @@ class TestServerDatabaseIntegration:
     @pytest.mark.asyncio
     async def test_lifespan_yaml_mode(self):
         """Test lifespan in YAML mode (database disabled)."""
-        from mini_router.server import lifespan, _config, _router, _tenant_manager
-        from mini_router.server import _database_connection, _repository, _sync_service
+        from mini_router.server import lifespan
 
         # Reset global state
         import mini_router.server as server_module
@@ -29,7 +28,10 @@ class TestServerDatabaseIntegration:
         mock_config.database = None
         mock_config.decisions = []
 
-        with patch("mini_router.server.load_config", return_value=mock_config):
+        server_module.app.state.config_path = "config.yaml"
+        server_module.app.state.env = "dev"
+
+        with patch("mini_router.server.load_yaml_config", return_value=mock_config):
             with patch("mini_router.server.TenantManager") as mock_tm:
                 mock_tm_instance = MagicMock()
                 mock_tm_instance.list_all.return_value = []
@@ -70,7 +72,10 @@ class TestServerDatabaseIntegration:
         mock_config.database.database = "test"
         mock_config.decisions = []
 
-        with patch("mini_router.server.load_config", return_value=mock_config):
+        server_module.app.state.config_path = None
+        server_module.app.state.env = "dev"
+
+        with patch("mini_router.server.load_database_config", return_value=mock_config.database):
             with patch("mini_router.server.DatabaseConnection") as mock_db:
                 mock_conn = MagicMock()
                 mock_conn.connect = AsyncMock()
@@ -97,22 +102,24 @@ class TestServerDatabaseIntegration:
                                 mock_sync_instance.stop = AsyncMock()
                                 mock_sync.return_value = mock_sync_instance
 
-                                async with lifespan(app):
-                                    pass  # Should initialize and shutdown cleanly
+                                with patch("mini_router.server.load_config_from_db", AsyncMock(return_value=mock_config)):
 
-                                # Verify database mode was used
-                                mock_db.assert_called_once_with(mock_config.database)
-                                mock_conn.connect.assert_called_once()
-                                mock_repo.assert_called_once_with(mock_conn)
-                                mock_tm.assert_called_once_with(repository=mock_repo_instance)
-                                mock_tm_instance.async_load.assert_called_once()
-                                mock_router.assert_called_once_with(mock_config, repository=mock_repo_instance)
-                                mock_sync.assert_called_once()
-                                mock_sync_instance.start.assert_called_once()
+                                    async with lifespan(app):
+                                        pass  # Should initialize and shutdown cleanly
 
-                                # Verify shutdown
-                                mock_sync_instance.stop.assert_called_once()
-                                mock_conn.close.assert_called_once()
+                                    # Verify database mode was used
+                                    mock_db.assert_called_once_with(mock_config.database)
+                                    mock_conn.connect.assert_called_once()
+                                    mock_repo.assert_called_once_with(mock_conn)
+                                    mock_tm.assert_called_once_with(repository=mock_repo_instance)
+                                    mock_tm_instance.async_load.assert_called_once()
+                                    mock_router.assert_called_once_with(mock_config, repository=mock_repo_instance)
+                                    mock_sync.assert_called_once()
+                                    mock_sync_instance.start.assert_called_once()
+
+                                    # Verify shutdown
+                                    mock_sync_instance.stop.assert_called_once()
+                                    mock_conn.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_lifespan_shutdown_without_database(self):
@@ -133,7 +140,10 @@ class TestServerDatabaseIntegration:
         mock_config.database = None
         mock_config.decisions = []
 
-        with patch("mini_router.server.load_config", return_value=mock_config):
+        server_module.app.state.config_path = "config.yaml"
+        server_module.app.state.env = "dev"
+
+        with patch("mini_router.server.load_yaml_config", return_value=mock_config):
             with patch("mini_router.server.TenantManager") as mock_tm:
                 mock_tm_instance = MagicMock()
                 mock_tm_instance.list_all.return_value = []

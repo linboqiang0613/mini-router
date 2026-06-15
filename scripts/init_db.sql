@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS `mini_router_tenant` (
     `timeout` FLOAT NOT NULL DEFAULT 120.0 COMMENT '请求超时时间',
     `apikey_pool_mode` VARCHAR(20) DEFAULT 'round_robin' COMMENT 'Key池模式',
     `decisions` JSON DEFAULT NULL COMMENT '租户路由规则',
+    `selection` JSON DEFAULT NULL COMMENT '租户模型选择策略',
     `version` INT NOT NULL DEFAULT 1 COMMENT '版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

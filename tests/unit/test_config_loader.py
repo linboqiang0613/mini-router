@@ -1,97 +1,128 @@
-# tests/unit/test_config_loader.py
 """Tests for config loader."""
 
-import os
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-from mini_router.config.loader import get_config_path, load_config
+import pytest
+
+from mini_router.config.loader import (
+    get_envs_config_path,
+    load_database_config,
+    load_envs_config,
+    load_yaml_config,
+)
 
 
-class TestGetConfigPath:
-    """Test get_config_path function."""
+class TestEnvsConfig:
+    """Tests for environment config loading."""
 
-    def test_dev_environment(self, tmp_path):
-        """Test dev environment loads config_dev.yaml."""
+    def test_get_envs_config_path_missing(self) -> None:
+        """Missing env config should raise."""
+        with pytest.raises(FileNotFoundError, match="envs_missing.yaml"):
+            get_envs_config_path("missing")
+
+    def test_load_envs_config(self, tmp_path, monkeypatch) -> None:
+        """Loads env-specific database config YAML."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config_file = config_dir / "config_dev.yaml"
-        config_file.write_text("server:\n  host: localhost\n")
-
-        with patch.dict("os.environ", {"MINI_ROUTER_ENV": "dev"}):
-            with patch("mini_router.config.loader.Path", side_effect=lambda x: tmp_path / x if x.startswith("config") else Path(x)):
-                # Should load config_dev.yaml
-                result = get_config_path()
-                # Just verify the function logic
-                assert "dev" in os.environ.get("MINI_ROUTER_ENV", "")
-
-    def test_prd_environment(self, tmp_path):
-        """Test prd environment loads config_prd.yaml."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config_file = config_dir / "config_prd.yaml"
-        config_file.write_text("server:\n  host: localhost\n")
-
-        with patch.dict("os.environ", {"MINI_ROUTER_ENV": "prd"}):
-            # Environment set to prd
-            assert os.environ.get("MINI_ROUTER_ENV") == "prd"
-
-    def test_default_is_dev(self):
-        """Test default environment is dev."""
-        with patch.dict("os.environ", {}, clear=True):
-            env = os.environ.get("MINI_ROUTER_ENV", "dev")
-            assert env == "dev"
-
-    def test_fallback_to_config_yaml(self, tmp_path):
-        """Test fallback to config.yaml when env file not found."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("server:\n  host: localhost\n")
-
-        # This tests the fallback logic concept
-        assert config_file.exists()
-
-
-class TestLoadConfig:
-    """Test load_config function."""
-
-    def test_loads_router_config(self, tmp_path):
-        """Test load_config returns RouterConfig."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
-server:
-  host: localhost
-  port: 8080
-models:
-  base_url: https://api.example.com
-  timeout: 120.0
-""")
-
-        # This test verifies the loader concept
-        # Actual implementation will need RouterConfig.from_yaml
-        assert config_file.exists()
-
-    def test_database_config_from_yaml(self, tmp_path):
-        """Test database config loaded from YAML."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
-server:
-  host: localhost
+        env_file = config_dir / "envs_dev.yaml"
+        env_file.write_text(
+            """
 database:
-  enabled: true
-  host: mysql.prod
+  host: mysql.local
+  port: 3306
+  user: root
   database: mini_router
-""")
+"""
+        )
 
-        # Verify YAML contains database section
-        import yaml
-        data = yaml.safe_load(config_file.open())
-        assert "database" in data
-        assert data["database"]["enabled"] == True
+        monkeypatch.chdir(tmp_path)
+        loaded = load_envs_config("dev")
 
-    def test_database_password_from_env(self):
-        """Test database password from environment variable."""
-        with patch.dict("os.environ", {"MINI_ROUTER_DB_ACCESS": "BEE_secret123"}):
-            from mini_router.database.config import get_database_config
-            config = get_database_config()
-            assert config.password == "secret123"
+        assert loaded["database"]["host"] == "mysql.local"
+
+    def test_load_database_config_uses_env_password(self, tmp_path, monkeypatch) -> None:
+        """Database password should come from MINI_ROUTER_DB_ACCESS."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        env_file = config_dir / "envs_dev.yaml"
+        env_file.write_text(
+            """
+database:
+  host: mysql.local
+  port: 3306
+  user: root
+  database: mini_router
+"""
+        )
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("MINI_ROUTER_DB_ACCESS", "BEE_secret123")
+        config = load_database_config("dev")
+
+        assert config.host == "mysql.local"
+        assert config.password == "BEE_secret123"
+
+
+class TestYamlConfig:
+    """Tests for YAML router config loading."""
+
+    def test_load_yaml_config_signal_only(self, tmp_path) -> None:
+        """Signal-only global YAML config remains valid."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+models:
+  base_url: https://api.example.com/v1
+  timeout: 120.0
+signals:
+  keyword_rules:
+    - name: code_related
+      keywords: ["code", "debug"]
+"""
+        )
+
+        config = load_yaml_config(str(config_file))
+
+        assert config.models.base_url == "https://api.example.com/v1"
+        assert len(config.signals.keyword_rules) == 1
+        assert config.decisions == []
+        assert config.database is None
+
+    def test_load_yaml_config_rejects_global_decisions(self, tmp_path) -> None:
+        """Global decisions are no longer allowed in YAML mode."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+models:
+  base_url: https://api.example.com/v1
+signals:
+  keyword_rules: []
+decisions: []
+"""
+        )
+
+        with pytest.raises(ValueError, match="global 'decisions'"):
+            load_yaml_config(str(config_file))
+
+    def test_load_yaml_config_rejects_global_selection(self, tmp_path) -> None:
+        """Global selection is no longer allowed in YAML mode."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+models:
+  base_url: https://api.example.com/v1
+signals:
+  keyword_rules: []
+selection:
+  strategy: static
+"""
+        )
+
+        with pytest.raises(ValueError, match="global 'selection'"):
+            load_yaml_config(str(config_file))
+
+    def test_load_yaml_config_missing_file(self, tmp_path) -> None:
+        """Missing YAML config should raise."""
+        missing = tmp_path / "missing.yaml"
+        with pytest.raises(FileNotFoundError):
+            load_yaml_config(str(missing))
