@@ -18,7 +18,7 @@
 ```bash
 curl -X POST http://localhost:8080/v1/route \
   -H "Content-Type: application/json" \
-  -d '{"query": "写一个 Python 函数"}'
+  -d '{"messages": [{"role": "user", "content": "写一个 Python 函数"}]}'
 ```
 
 **响应示例：**

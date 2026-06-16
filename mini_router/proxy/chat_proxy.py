@@ -9,6 +9,15 @@ import structlog
 
 from mini_router.logging_utils import RequestTrace
 from mini_router.proxy.apikey_selector import ApiKeyPoolSelector
+from mini_router.proxy.request_pipeline import (
+    AuthenticationError,
+    TenantDisabledError,
+    authenticate_tenant,
+    build_routing_context,
+    content_to_str,
+    extract_apikey,
+    extract_query,
+)
 from mini_router.proxy.strategies import ApiKeyStrategy, create_apikey_strategy
 from mini_router.proxy.types import (
     ChatChoice,
@@ -19,23 +28,11 @@ from mini_router.proxy.types import (
     ChatResponse,
     ChatUsage,
 )
-from mini_router.router.router import Router, RoutingRequest
+from mini_router.router.router import Router
 from mini_router.signal_layer.classifier import OpenAIClient
 from mini_router.tenant.types import TenantConfig, build_base_url
 
 logger = structlog.get_logger()
-
-
-class AuthenticationError(Exception):
-    """Raised when API key is missing or invalid."""
-
-    pass
-
-
-class TenantDisabledError(Exception):
-    """Raised when tenant is disabled."""
-
-    pass
 
 
 class ChatProxy:
@@ -62,19 +59,7 @@ class ChatProxy:
         Returns:
             The extracted API key, or None if not found/invalid format.
         """
-        if not authorization:
-            return None
-
-        # Check for Bearer token format
-        if not authorization.startswith("Bearer "):
-            return None
-
-        # Extract the token after "Bearer "
-        apikey = authorization[7:].strip()
-        if not apikey:
-            return None
-
-        return apikey
+        return extract_apikey(authorization)
 
     @staticmethod
     def authenticate_tenant(
@@ -94,15 +79,7 @@ class ChatProxy:
             AuthenticationError: If API key is invalid or tenant not found
             TenantDisabledError: If tenant is disabled
         """
-        tenant = tenant_manager.get_by_apikey(apikey)
-
-        if tenant is None:
-            raise AuthenticationError("Invalid API key: tenant not found")
-
-        if not tenant.enabled:
-            raise TenantDisabledError(f"Tenant '{tenant.tenant_id}' is disabled")
-
-        return tenant
+        return authenticate_tenant(tenant_manager, apikey)
 
     def _get_apikey_pool(self, tenant: TenantConfig) -> list[str]:
         """Get the API key pool for a tenant.
@@ -223,9 +200,6 @@ class ChatProxy:
         4. Stream response back
         5. Record latency automatically
         """
-        # Extract query from last user message
-        query = self._extract_query(request.messages)
-
         if request.model:
             logger.info(
                 "requested_model_ignored",
@@ -233,19 +207,11 @@ class ChatProxy:
                 tenant_id=tenant.tenant_id if tenant else None,
             )
 
-        decisions = tenant.decisions if tenant else None
-        selection = tenant.selection if tenant else None
-        routing_result = await self.router.route(
-            RoutingRequest(
-                query=query,
-                user_id=request.user,
-                metadata=request.metadata or {},
-            ),
-            decisions=decisions,
-            selection=selection,
+        query, routing_result = await self._resolve_routing_state(
+            request,
+            tenant=tenant,
+            trace=trace,
         )
-        if trace is not None:
-            trace.apply_routing_result(routing_result)
         selected_model = routing_result.selected_model
         decision_name = routing_result.decision_name
 
@@ -453,9 +419,6 @@ class ChatProxy:
 
         Returns a complete ChatResponse.
         """
-        # Extract query from last user message
-        query = self._extract_query(request.messages)
-
         if request.model:
             logger.info(
                 "requested_model_ignored",
@@ -463,19 +426,11 @@ class ChatProxy:
                 tenant_id=tenant.tenant_id if tenant else None,
             )
 
-        decisions = tenant.decisions if tenant else None
-        selection = tenant.selection if tenant else None
-        routing_result = await self.router.route(
-            RoutingRequest(
-                query=query,
-                user_id=request.user,
-                metadata=request.metadata or {},
-            ),
-            decisions=decisions,
-            selection=selection,
+        query, routing_result = await self._resolve_routing_state(
+            request,
+            tenant=tenant,
+            trace=trace,
         )
-        if trace is not None:
-            trace.apply_routing_result(routing_result)
         selected_model = routing_result.selected_model
         decision_name = routing_result.decision_name
 
@@ -659,14 +614,9 @@ class ChatProxy:
         Uses the last user message as the query for routing.
         Handles both string content and array content format.
         """
-        for msg in reversed(messages):
-            if msg.role == "user":
-                return self._content_to_str(msg.content)
+        return extract_query(messages)
 
-        # Fallback: join all message content
-        return " ".join(self._content_to_str(msg.content) for msg in messages if msg.content)
-
-    def _content_to_str(self, content: str | list[dict[str, Any]]) -> str:
+    def _content_to_str(self, content: str | list[dict[str, Any]] | None) -> str:
         """Convert content to string for routing.
 
         Supports text and image_url content types per OpenAI API format.
@@ -677,19 +627,25 @@ class ChatProxy:
         Returns:
             String representation of content.
         """
-        if isinstance(content, str):
-            return content
+        return content_to_str(content)
 
-        text_parts = []
-        has_image = False
-        for block in content:
-            block_type = block.get("type")
-            if block_type == "text":
-                text_parts.append(block.get("text", ""))
-            elif block_type == "image_url":
-                has_image = True
+    async def _resolve_routing_state(
+        self,
+        request: ChatRequest,
+        *,
+        tenant: TenantConfig | None = None,
+        trace: RequestTrace | None = None,
+    ) -> tuple[str, Any]:
+        """Resolve routing once, reusing a pre-populated trace when available."""
+        if trace is not None and trace.routing_result is not None:
+            return trace.query, trace.routing_result
 
-        if has_image:
-            text_parts.append("[图片]")
-
-        return " ".join(text_parts)
+        context = await build_routing_context(
+            self.router,
+            query=self._extract_query(request.messages),
+            user_id=request.user,
+            metadata=request.metadata,
+            tenant=tenant,
+            trace=trace,
+        )
+        return context.query, context.routing_result

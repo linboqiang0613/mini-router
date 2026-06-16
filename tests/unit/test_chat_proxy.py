@@ -219,6 +219,69 @@ class TestChatProxy:
         assert any(call.args[0] == "request_finished" for call in mock_info.call_args_list)
 
     @pytest.mark.asyncio
+    async def test_chat_reuses_precomputed_routing_trace(self) -> None:
+        """Chat should reuse a pre-routed trace instead of routing twice."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.tenant.types import TenantConfig
+
+        precomputed_result = MagicMock(
+            selected_model="gpt-4",
+            decision_name="route-test",
+            matched_rules=["code_related"],
+            confidence=0.9,
+            cache_hit=False,
+            cache_response=None,
+            action=MagicMock(value="route"),
+            reject_message=None,
+            signals=None,
+            candidate_models=["gpt-4"],
+            filtered_candidate_models=["gpt-4"],
+            selection_strategy="static",
+            selection_metadata={"source": "shared-pipeline"},
+        )
+
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock()
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock(
+            return_value={
+                "id": "test-123",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Hello"}}
+                ],
+            }
+        )
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id="tenant-1",
+            query="Hello router",
+            stream=False,
+        )
+        trace.apply_routing_result(precomputed_result)
+
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="tenant-apikey",
+            name="Test Tenant",
+            enabled=True,
+            base_url_template="http://tenant-api.com/llm/{model}/v1",
+        )
+
+        response = await proxy.chat(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=False),
+            tenant=tenant,
+            trace=trace,
+        )
+
+        assert response.model == "gpt-4"
+        mock_router.route.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_chat_stream_records_chunk_count_on_completion(self) -> None:
         """Streaming chat should emit request_finished after stream completion."""
         from mini_router.proxy.chat_proxy import ChatProxy

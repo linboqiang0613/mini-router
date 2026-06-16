@@ -593,7 +593,7 @@ class TestChatWithTenantAuth:
             client = TestClient(app)
             response = client.post(
                 "/v1/route",
-                json={"query": "01234567890123456789EXTRA"},
+                json={"messages": [{"role": "user", "content": "01234567890123456789EXTRA"}]},
                 headers={"Authorization": "Bearer sk-route-log-key"},
             )
 
@@ -638,7 +638,7 @@ class TestChatWithTenantAuth:
                 )
                 response = client.post(
                     "/v1/route",
-                    json={"query": "unmatched query"},
+                    json={"messages": [{"role": "user", "content": "unmatched query"}]},
                     headers={"Authorization": "Bearer sk-route-no-match-key"},
                 )
 
@@ -665,7 +665,7 @@ class TestChatWithTenantAuth:
                 mini_router.server.get_router().route.side_effect = RuntimeError("route boom")
                 response = client.post(
                     "/v1/route",
-                    json={"query": "boom"},
+                    json={"messages": [{"role": "user", "content": "boom"}]},
                     headers={"Authorization": "Bearer sk-route-error-key"},
                 )
 
@@ -676,6 +676,53 @@ class TestChatWithTenantAuth:
         assert finished_call.kwargs["status"] == "error"
         assert finished_call.kwargs["result"]["finish_reason"] == "route_error"
         assert finished_call.kwargs["result"]["error_type"] == "RuntimeError"
+
+    def test_route_request_logs_selection_fields(self, isolated_manager) -> None:
+        """Route endpoint should preserve selection diagnostics in request_finished."""
+        manager = isolated_manager
+        manager.create(
+            TenantConfig(
+                tenant_id="route-selection-tenant",
+                apikey="sk-route-selection-key",
+                enabled=True,
+                base_url_template="http://api.example.com/{model}/v1",
+            )
+        )
+        with patch("mini_router.server.logger.info") as mock_log_info:
+            with TestClient(app) as client:
+                mini_router.server.get_router().route.return_value = MagicMock(
+                    selected_model="tenant-model",
+                    decision_name="tenant-decision",
+                    matched_rules=["rule-1"],
+                    confidence=0.9,
+                    cache_hit=False,
+                    cache_response=None,
+                    action=MagicMock(value="route"),
+                    reject_message=None,
+                    signals=None,
+                    candidate_models=["tenant-model", "tenant-fallback"],
+                    filtered_candidate_models=["tenant-model"],
+                    selection_strategy="static",
+                    selection_metadata={"source": "shared-pipeline"},
+                )
+                response = client.post(
+                    "/v1/route",
+                    json={"messages": [{"role": "user", "content": "route selection query"}]},
+                    headers={"Authorization": "Bearer sk-route-selection-key"},
+                )
+
+        assert response.status_code == 200
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert finished_call.kwargs["selection"]["strategy"] == "static"
+        assert finished_call.kwargs["selection"]["candidate_models"] == [
+            "tenant-model",
+            "tenant-fallback",
+        ]
+        assert finished_call.kwargs["selection"]["filtered_candidate_models"] == [
+            "tenant-model",
+        ]
 
     def test_chat_request_logs_finished_on_error(self, isolated_manager) -> None:
         """Chat endpoint should emit request_finished when routing raises."""
@@ -748,7 +795,10 @@ class TestRouteWithTenantAuth:
     def test_route_without_auth_returns_401(self, isolated_manager) -> None:
         """Route endpoint should reject missing auth."""
         client = TestClient(app)
-        response = client.post("/v1/route", json={"query": "hello"})
+        response = client.post(
+            "/v1/route",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
 
         assert response.status_code == 401
         assert "Authorization" in response.json()["detail"]
@@ -768,7 +818,7 @@ class TestRouteWithTenantAuth:
         client = TestClient(app)
         response = client.post(
             "/v1/route",
-            json={"query": "hello"},
+            json={"messages": [{"role": "user", "content": "hello"}]},
             headers={"Authorization": "Bearer sk-disabled-route"},
         )
 
