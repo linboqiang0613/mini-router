@@ -1,10 +1,12 @@
 """Tests for classifier module."""
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from mini_router.config.config import KeywordRule, Operator
+from mini_router.request_log_context import bind_request_log_context, reset_request_log_context
 from mini_router.signal_layer.classifier import KeywordClassifier
 from mini_router.signal_layer.types import SignalMatches, TaskResult, TaskType
 
@@ -568,7 +570,12 @@ class TestMLClassifierTimeoutFallback:
         # Mock client that takes longer than timeout
         with patch("httpx.AsyncClient", return_value=MagicMock()):
             client = OpenAIClient(timeout=60.0)
-        client.chat_completion = AsyncMock(side_effect=lambda *args, **kwargs: asyncio.sleep(2))
+
+        async def slow_chat_completion(*args, **kwargs):
+            await asyncio.sleep(2)
+            return {"choices": [{"message": {"content": "detected"}}]}
+
+        client.chat_completion = slow_chat_completion
 
         classifier = PIIClassifier(config, client)
 
@@ -577,6 +584,44 @@ class TestMLClassifierTimeoutFallback:
         assert result.pii.label == "detected"
         assert result.pii.confidence == 0.0
         assert result.pii.metadata.get("fallback") is True
+
+    @pytest.mark.asyncio
+    async def test_timeout_log_includes_request_id(self) -> None:
+        """Classifier timeout logs should include the active request_id."""
+        from mini_router.signal_layer.classifier import PIIClassifier
+        from mini_router.config.config import ClassifierModelConfig
+        from mini_router.client import OpenAIClient
+
+        config = ClassifierModelConfig(
+            model="test-model",
+            enabled=True,
+            timeout=1.0,
+            fallback_label="detected",
+        )
+
+        with patch("httpx.AsyncClient", return_value=MagicMock()):
+            client = OpenAIClient(timeout=60.0)
+
+        async def slow_chat_completion(*args, **kwargs):
+            await asyncio.sleep(2)
+            return {"choices": [{"message": {"content": "detected"}}]}
+
+        client.chat_completion = slow_chat_completion
+
+        classifier = PIIClassifier(config, client)
+        token = bind_request_log_context(request_id="req-classifier")
+
+        try:
+            with patch("mini_router.signal_layer.classifier.logger.warning") as mock_warning:
+                await classifier.classify("test text")
+        finally:
+            reset_request_log_context(token)
+
+        timeout_call = next(
+            call for call in mock_warning.call_args_list
+            if call.args[0] == "pii_classifier_timeout"
+        )
+        assert timeout_call.kwargs["request_id"] == "req-classifier"
 
     @pytest.mark.asyncio
     async def test_disabled_classifier_returns_empty(self) -> None:

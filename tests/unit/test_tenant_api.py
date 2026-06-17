@@ -577,6 +577,91 @@ class TestChatWithTenantAuth:
         assert "request_started" in event_names
         assert "request_finished" in event_names
 
+    def test_streaming_chat_passthroughs_prepared_upstream_error(self, isolated_manager) -> None:
+        """Streaming chat should return pre-stream upstream errors without wrapping them."""
+        manager = isolated_manager
+
+        tenant = TenantConfig(
+            tenant_id="stream-error-tenant",
+            apikey="sk-stream-error-key",
+            name="Stream Error Tenant",
+            enabled=True,
+            base_url_template="http://api.example.com/{model}/v1",
+        )
+        manager.create(tenant)
+
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import PreparedChatStreamResponse
+
+        async def mock_chat_stream(self, request, tenant=None, trace=None):
+            return PreparedChatStreamResponse(
+                status_code=429,
+                media_type="application/json",
+                headers={"x-upstream": "rate-limit"},
+                body=b'{"error":"rate limited"}',
+            )
+
+        with patch.object(ChatProxy, "chat_stream", mock_chat_stream):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": True,
+                    },
+                    headers={"Authorization": "Bearer sk-stream-error-key"},
+                )
+
+        assert response.status_code == 429
+        assert response.headers["x-upstream"] == "rate-limit"
+        assert response.text == '{"error":"rate limited"}'
+
+    def test_streaming_chat_passthroughs_raw_sse_bytes(self, isolated_manager) -> None:
+        """Streaming chat should forward raw SSE bytes without router-added framing."""
+        manager = isolated_manager
+
+        tenant = TenantConfig(
+            tenant_id="stream-success-tenant",
+            apikey="sk-stream-success-key",
+            name="Stream Success Tenant",
+            enabled=True,
+            base_url_template="http://api.example.com/{model}/v1",
+        )
+        manager.create(tenant)
+
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import PreparedChatStreamResponse
+
+        async def raw_stream():
+            yield b"event: message\nid: 1\ndata: hello\n\n"
+            yield b": keepalive\n\n"
+            yield b"data: [DONE]\n\n"
+
+        async def mock_chat_stream(self, request, tenant=None, trace=None):
+            return PreparedChatStreamResponse(
+                status_code=200,
+                media_type="text/event-stream",
+                headers={"x-upstream": "stream"},
+                stream=raw_stream(),
+            )
+
+        with patch.object(ChatProxy, "chat_stream", mock_chat_stream):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": True,
+                    },
+                    headers={"Authorization": "Bearer sk-stream-success-key"},
+                )
+
+        assert response.status_code == 200
+        assert response.headers["x-upstream"] == "stream"
+        assert response.headers["cache-control"] == "no-cache"
+        assert response.headers["x-accel-buffering"] == "no"
+        assert response.text == "event: message\nid: 1\ndata: hello\n\n: keepalive\n\ndata: [DONE]\n\n"
+
     def test_route_request_lifecycle_logs(self, isolated_manager) -> None:
         """Route endpoint should emit request_started and request_finished with bounded preview."""
         manager = isolated_manager
@@ -593,7 +678,7 @@ class TestChatWithTenantAuth:
             client = TestClient(app)
             response = client.post(
                 "/v1/route",
-                json={"query": "01234567890123456789EXTRA"},
+                json={"messages": [{"role": "user", "content": "01234567890123456789EXTRA"}]},
                 headers={"Authorization": "Bearer sk-route-log-key"},
             )
 
@@ -604,9 +689,62 @@ class TestChatWithTenantAuth:
         finished_call = next(
             call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
         )
-        assert started_call.kwargs["query_preview"] == "01234567890123456789"
-        assert finished_call.kwargs["query_preview"] == "01234567890123456789"
+        assert started_call.kwargs["query_preview"] == "01234567890123456789EXTRA"
+        assert finished_call.kwargs["query_preview"] == "01234567890123456789EXTRA"
         assert finished_call.kwargs["status"] == "completed"
+
+    def test_chat_request_lifecycle_logs_use_50_char_preview(self, isolated_manager) -> None:
+        """Chat lifecycle logs should keep a bounded 50-character preview."""
+        manager = isolated_manager
+        tenant = TenantConfig(
+            tenant_id="chat-log-tenant",
+            apikey="sk-chat-log-key",
+            name="Chat Log Tenant",
+            enabled=True,
+            base_url_template="http://api.example.com/{model}/v1",
+        )
+        manager.create(tenant)
+
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatResponse, ChatChoice, ChatMessage
+
+        long_query = "0123456789" * 7
+
+        async def mock_chat(self, request, tenant=None, trace=None):
+            assert trace is not None
+            trace.record_completion(status="completed", finish_reason="chat_completed")
+            mini_router.server.logger.info("request_finished", **trace.finished_event())
+            return ChatResponse(
+                model="gpt-4",
+                choices=[
+                    ChatChoice(
+                        message=ChatMessage(role="assistant", content="Hello!"),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        with patch.object(ChatProxy, "chat", mock_chat):
+            with patch("mini_router.server.logger.info") as mock_log_info:
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "messages": [{"role": "user", "content": long_query}],
+                            "stream": False,
+                        },
+                        headers={"Authorization": "Bearer sk-chat-log-key"},
+                    )
+
+        assert response.status_code == 200
+        started_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_started"
+        )
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert started_call.kwargs["query_preview"] == long_query[:50]
+        assert finished_call.kwargs["query_preview"] == long_query[:50]
 
     def test_route_request_logs_no_match_status(self, isolated_manager) -> None:
         """Route endpoint should not label unmatched routing as completed."""
@@ -638,7 +776,7 @@ class TestChatWithTenantAuth:
                 )
                 response = client.post(
                     "/v1/route",
-                    json={"query": "unmatched query"},
+                    json={"messages": [{"role": "user", "content": "unmatched query"}]},
                     headers={"Authorization": "Bearer sk-route-no-match-key"},
                 )
 
@@ -665,7 +803,7 @@ class TestChatWithTenantAuth:
                 mini_router.server.get_router().route.side_effect = RuntimeError("route boom")
                 response = client.post(
                     "/v1/route",
-                    json={"query": "boom"},
+                    json={"messages": [{"role": "user", "content": "boom"}]},
                     headers={"Authorization": "Bearer sk-route-error-key"},
                 )
 
@@ -676,6 +814,53 @@ class TestChatWithTenantAuth:
         assert finished_call.kwargs["status"] == "error"
         assert finished_call.kwargs["result"]["finish_reason"] == "route_error"
         assert finished_call.kwargs["result"]["error_type"] == "RuntimeError"
+
+    def test_route_request_logs_selection_fields(self, isolated_manager) -> None:
+        """Route endpoint should preserve selection diagnostics in request_finished."""
+        manager = isolated_manager
+        manager.create(
+            TenantConfig(
+                tenant_id="route-selection-tenant",
+                apikey="sk-route-selection-key",
+                enabled=True,
+                base_url_template="http://api.example.com/{model}/v1",
+            )
+        )
+        with patch("mini_router.server.logger.info") as mock_log_info:
+            with TestClient(app) as client:
+                mini_router.server.get_router().route.return_value = MagicMock(
+                    selected_model="tenant-model",
+                    decision_name="tenant-decision",
+                    matched_rules=["rule-1"],
+                    confidence=0.9,
+                    cache_hit=False,
+                    cache_response=None,
+                    action=MagicMock(value="route"),
+                    reject_message=None,
+                    signals=None,
+                    candidate_models=["tenant-model", "tenant-fallback"],
+                    filtered_candidate_models=["tenant-model"],
+                    selection_strategy="static",
+                    selection_metadata={"source": "shared-pipeline"},
+                )
+                response = client.post(
+                    "/v1/route",
+                    json={"messages": [{"role": "user", "content": "route selection query"}]},
+                    headers={"Authorization": "Bearer sk-route-selection-key"},
+                )
+
+        assert response.status_code == 200
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert finished_call.kwargs["selection"]["strategy"] == "static"
+        assert finished_call.kwargs["selection"]["candidate_models"] == [
+            "tenant-model",
+            "tenant-fallback",
+        ]
+        assert finished_call.kwargs["selection"]["filtered_candidate_models"] == [
+            "tenant-model",
+        ]
 
     def test_chat_request_logs_finished_on_error(self, isolated_manager) -> None:
         """Chat endpoint should emit request_finished when routing raises."""
@@ -748,7 +933,10 @@ class TestRouteWithTenantAuth:
     def test_route_without_auth_returns_401(self, isolated_manager) -> None:
         """Route endpoint should reject missing auth."""
         client = TestClient(app)
-        response = client.post("/v1/route", json={"query": "hello"})
+        response = client.post(
+            "/v1/route",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
 
         assert response.status_code == 401
         assert "Authorization" in response.json()["detail"]
@@ -768,7 +956,7 @@ class TestRouteWithTenantAuth:
         client = TestClient(app)
         response = client.post(
             "/v1/route",
-            json={"query": "hello"},
+            json={"messages": [{"role": "user", "content": "hello"}]},
             headers={"Authorization": "Bearer sk-disabled-route"},
         )
 

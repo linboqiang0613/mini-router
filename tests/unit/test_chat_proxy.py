@@ -1,5 +1,6 @@
 """Tests for chat proxy."""
 
+import httpx
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -11,7 +12,11 @@ from mini_router.proxy.types import (
     ChatRequest,
     ChatResponse,
 )
-from mini_router.logging_utils import RequestTrace
+from mini_router.logging_utils import (
+    RequestTrace,
+    mask_api_key,
+)
+from mini_router.request_log_context import bind_request_log_context, reset_request_log_context
 
 
 class TestChatTypes:
@@ -107,6 +112,39 @@ class TestChatTypes:
         )
         assert response.model == "gpt-4"
         assert response.choices[0].message.content == "Hello"
+
+
+class TestLoggingHelpers:
+    """Tests for request logging helpers."""
+
+    def test_mask_api_key_long_value(self) -> None:
+        """Long API keys should preserve first 6 and last 4 characters."""
+        assert mask_api_key("sk-1234567890abcd") == "sk-123*******abcd"
+
+    def test_mask_api_key_short_value(self) -> None:
+        """Short API keys should preserve first 3 characters and mask the rest."""
+        assert mask_api_key("sk-1234") == "sk-****"
+        assert mask_api_key("abc") == "***"
+
+    def test_request_trace_finished_event_masks_final_upstream_key(self) -> None:
+        """Finished events should only expose the masked final upstream key."""
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id="tenant-1",
+            query="Hello router",
+            stream=False,
+        )
+        trace.record_completion(
+            status="completed",
+            finish_reason="chat_completed",
+            final_upstream_api_key="sk-1234567890abcd",
+        )
+
+        assert (
+            trace.finished_event()["result"]["final_upstream_apikey_masked"]
+            == "sk-123*******abcd"
+        )
 
 
 class TestChatProxy:
@@ -219,8 +257,137 @@ class TestChatProxy:
         assert any(call.args[0] == "request_finished" for call in mock_info.call_args_list)
 
     @pytest.mark.asyncio
+    async def test_chat_reuses_precomputed_routing_trace(self) -> None:
+        """Chat should reuse a pre-routed trace instead of routing twice."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.tenant.types import TenantConfig
+
+        precomputed_result = MagicMock(
+            selected_model="gpt-4",
+            decision_name="route-test",
+            matched_rules=["code_related"],
+            confidence=0.9,
+            cache_hit=False,
+            cache_response=None,
+            action=MagicMock(value="route"),
+            reject_message=None,
+            signals=None,
+            candidate_models=["gpt-4"],
+            filtered_candidate_models=["gpt-4"],
+            selection_strategy="static",
+            selection_metadata={"source": "shared-pipeline"},
+        )
+
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock()
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock(
+            return_value={
+                "id": "test-123",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Hello"}}
+                ],
+            }
+        )
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id="tenant-1",
+            query="Hello router",
+            stream=False,
+        )
+        trace.apply_routing_result(precomputed_result)
+
+        tenant = TenantConfig(
+            tenant_id="tenant-1",
+            apikey="tenant-apikey",
+            name="Test Tenant",
+            enabled=True,
+            base_url_template="http://tenant-api.com/llm/{model}/v1",
+        )
+
+        response = await proxy.chat(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=False),
+            tenant=tenant,
+            trace=trace,
+        )
+
+        assert response.model == "gpt-4"
+        mock_router.route.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_chat_stream_records_chunk_count_on_completion(self) -> None:
-        """Streaming chat should emit request_finished after stream completion."""
+        """Transparent streaming should emit request_finished after stream completion."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.client.openai_client import RawStreamResponse
+
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(
+            return_value=MagicMock(
+                selected_model="gpt-4",
+                decision_name="route-test",
+                matched_rules=["code_related"],
+                confidence=0.9,
+                cache_hit=False,
+                cache_response=None,
+                action=MagicMock(value="route"),
+                reject_message=None,
+                signals=None,
+                candidate_models=["gpt-4"],
+                filtered_candidate_models=["gpt-4"],
+                selection_strategy="static",
+                selection_metadata={},
+            )
+        )
+        mock_router.record_latency = AsyncMock()
+
+        async def mock_aiter_raw():
+            yield b"data: {\"choices\": [{\"delta\": {\"content\": \"Hello\"}}]}\n\n"
+            yield b"data: {\"choices\": [{\"delta\": {\"content\": \" world\"}}]}\n\n"
+            yield b"data: [DONE]\n\n"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "text/event-stream"}
+        mock_response.request = httpx.Request("POST", "http://api.example.com/v1/chat/completions")
+        mock_response.aiter_raw = mock_aiter_raw
+        mock_response.aclose = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.open_chat_completion_stream = AsyncMock(
+            return_value=RawStreamResponse(response=mock_response)
+        )
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id="tenant-1",
+            query="Hello router",
+            stream=True,
+        )
+
+        with patch("mini_router.proxy.chat_proxy.logger.info") as mock_info:
+            prepared = await proxy.chat_stream(
+                ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=True),
+                trace=trace,
+            )
+            chunks = [chunk async for chunk in prepared.stream]
+
+        assert prepared.status_code == 200
+        assert b"".join(chunks).endswith(b"data: [DONE]\n\n")
+        assert trace.status == "completed"
+        assert trace.finish_reason == "stream_completed"
+        assert trace.chunk_count == 2
+        assert any(call.args[0] == "request_finished" for call in mock_info.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_chat_proxy_completed_log_includes_request_id(self) -> None:
+        """Proxy completion logs should include the active request_id."""
         from mini_router.proxy.chat_proxy import ChatProxy
 
         mock_router = MagicMock()
@@ -243,36 +410,39 @@ class TestChatProxy:
         )
         mock_router.record_latency = AsyncMock()
 
-        async def mock_stream(*args, **kwargs):
-            yield {"choices": [{"delta": {"content": "Hello"}}]}
-            yield {"choices": [{"delta": {"content": " world"}}]}
-
         mock_client = MagicMock()
-        mock_client.chat_completion_stream = mock_stream
-
-        proxy = ChatProxy(mock_router, mock_client)
-        trace = RequestTrace(
-            path="/v1/chat/completions",
-            method="POST",
-            tenant_id="tenant-1",
-            query="Hello router",
-            stream=True,
+        mock_client.chat_completion = AsyncMock(
+            return_value={
+                "id": "test-123",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Hello"}}
+                ],
+            }
         )
 
-        with patch("mini_router.proxy.chat_proxy.logger.info") as mock_info:
-            chunks = [
-                chunk
-                async for chunk in proxy.chat_stream(
-                    ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=True),
-                    trace=trace,
-                )
-            ]
+        proxy = ChatProxy(mock_router, mock_client)
+        token = bind_request_log_context(request_id="req-123")
 
-        assert len(chunks) == 2
-        assert trace.status == "completed"
-        assert trace.finish_reason == "stream_completed"
-        assert trace.chunk_count == 2
-        assert any(call.args[0] == "request_finished" for call in mock_info.call_args_list)
+        try:
+            with patch("mini_router.proxy.chat_proxy.logger.info") as mock_info:
+                await proxy.chat(
+                    ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=False),
+                    trace=RequestTrace(
+                        path="/v1/chat/completions",
+                        method="POST",
+                        tenant_id="tenant-1",
+                        query="Hello router",
+                        stream=False,
+                        request_id="req-123",
+                    ),
+                )
+        finally:
+            reset_request_log_context(token)
+
+        completed_call = next(
+            call for call in mock_info.call_args_list if call.args[0] == "chat_proxy_completed"
+        )
+        assert completed_call.kwargs["request_id"] == "req-123"
 
 
 class TestDynamicClient:
@@ -310,6 +480,43 @@ class TestDynamicClient:
             call_args = mock_httpx_client.post.call_args
             assert call_args[0][0] == "http://dynamic-api.com/v1/chat/completions"
             assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_logs_include_request_id(self) -> None:
+        """Client request logs should include the active request_id."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+            token = bind_request_log_context(request_id="req-456")
+
+            try:
+                with patch("mini_router.client.openai_client.logger.info") as mock_info:
+                    await client.chat_completion(
+                        model="gpt-4",
+                        messages=[{"role": "user", "content": "Hello"}],
+                        base_url="http://dynamic-api.com/v1",
+                        api_key="dynamic-key",
+                    )
+            finally:
+                reset_request_log_context(token)
+
+        start_call = next(
+            call for call in mock_info.call_args_list if call.args[0] == "api_call_start"
+        )
+        assert start_call.kwargs["request_id"] == "req-456"
 
     @pytest.mark.asyncio
     async def test_chat_completion_without_api_key(self) -> None:
@@ -351,9 +558,13 @@ class TestDynamicClient:
         # Mock httpx.AsyncClient to avoid proxy issues
         mock_httpx_client = MagicMock()
 
-        # Mock the stream response
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
+        mock_response.aclose = AsyncMock()
+        mock_response.request = httpx.Request(
+            "POST",
+            "http://dynamic-api.com/v1/chat/completions",
+        )
 
         # Simulate SSE lines
         async def mock_aiter_lines():
@@ -361,12 +572,8 @@ class TestDynamicClient:
             yield "data: [DONE]"
 
         mock_response.aiter_lines = mock_aiter_lines
-
-        # Mock the stream method to return an async context manager
-        mock_stream_context = MagicMock()
-        mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_context.__aexit__ = AsyncMock(return_value=None)
-        mock_httpx_client.stream = MagicMock(return_value=mock_stream_context)
+        mock_httpx_client.build_request.return_value = mock_response.request
+        mock_httpx_client.send = AsyncMock(return_value=mock_response)
 
         with patch("httpx.AsyncClient", return_value=mock_httpx_client):
             from mini_router.client.openai_client import OpenAIClient
@@ -387,10 +594,10 @@ class TestDynamicClient:
             assert chunks[0]["choices"][0]["delta"]["content"] == "Hello"
 
             # Verify the call was made with correct URL
-            call_args = mock_httpx_client.stream.call_args
-            # stream is called with ("POST", url, headers=headers, json=payload)
-            assert call_args[0][1] == "http://dynamic-api.com/v1/chat/completions"
-            assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+            build_call = mock_httpx_client.build_request.call_args
+            assert build_call[0][1] == "http://dynamic-api.com/v1/chat/completions"
+            assert "Bearer dynamic-key" in build_call[1]["headers"]["Authorization"]
+            mock_httpx_client.send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_chat_completion_backward_compatibility(self) -> None:

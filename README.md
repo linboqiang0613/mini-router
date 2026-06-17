@@ -70,7 +70,7 @@ mini-router-server --help
 # 路由请求
 curl -X POST http://localhost:8080/v1/route \
   -H "Content-Type: application/json" \
-  -d '{"query": "How do I debug this code?"}'
+  -d '{"messages": [{"role": "user", "content": "How do I debug this code?"}]}'
 
 # 响应示例
 # {
@@ -314,8 +314,11 @@ src/mini-router-python/
 **请求体:**
 ```json
 {
-  "query": "How do I debug this code?",
-  "user_id": "user-123",        // 可选
+  "messages": [
+    {"role": "user", "content": "How do I debug this code?"}
+  ],
+  "model": "gpt-4o",            // 可选，会被忽略
+  "user": "user-123",           // 可选
   "metadata": {}                // 可选
 }
 ```

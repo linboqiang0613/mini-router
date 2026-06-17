@@ -1,10 +1,13 @@
 """Unit tests for API key pool fallback mode."""
 
+import gzip
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
+from mini_router.logging_utils import RequestTrace
 from mini_router.proxy.chat_proxy import ChatProxy
+from mini_router.client.openai_client import RawStreamResponse
 from mini_router.proxy.types import ChatRequest, ChatMessage, ChatChunk, ChatChoice, ChatChoiceDelta
 from mini_router.tenant.types import TenantConfig
 from mini_router.config.config import RouterConfig
@@ -200,6 +203,80 @@ class TestFallbackMode:
         assert "500" in response.choices[0].message.content
 
     @pytest.mark.asyncio
+    async def test_final_upstream_key_is_masked_after_fallback_success(self, tenant_fallback):
+        """Finished trace should record the masked final upstream key after fallback."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_response = {
+            "id": "test",
+            "choices": [{"message": {"role": "assistant", "content": "Success"}, "finish_reason": "stop"}],
+        }
+
+        call_count = [0]
+
+        async def mock_chat_completion(model, messages, base_url, api_key, **kwargs):
+            current_count = call_count[0]
+            call_count[0] += 1
+            if current_count == 0:
+                response = httpx.Response(429, text="Rate limited")
+                raise httpx.HTTPStatusError("429", request=None, response=response)
+            return mock_response
+
+        mock_client.chat_completion = mock_chat_completion
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id=tenant_fallback.tenant_id,
+            query="Hi",
+            stream=False,
+        )
+
+        await proxy.chat(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=False),
+            tenant=tenant_fallback,
+            trace=trace,
+        )
+
+        assert trace.finished_event()["result"]["final_upstream_apikey_masked"] == "sk-*****"
+
+    @pytest.mark.asyncio
+    async def test_final_upstream_key_is_masked_after_fallback_exhaustion(self, tenant_fallback):
+        """Finished trace should record the masked final upstream key after fallback exhaustion."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+
+        async def mock_chat_completion(model, messages, base_url, api_key, **kwargs):
+            response = httpx.Response(429, text="Rate limited")
+            raise httpx.HTTPStatusError("429", request=None, response=response)
+
+        mock_client.chat_completion = mock_chat_completion
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id=tenant_fallback.tenant_id,
+            query="Hi",
+            stream=False,
+        )
+
+        await proxy.chat(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=False),
+            tenant=tenant_fallback,
+            trace=trace,
+        )
+
+        assert trace.finished_event()["result"]["final_upstream_apikey_masked"] == "sk-*****"
+
+    @pytest.mark.asyncio
     async def test_empty_pool_uses_management_key(self, tenant_empty_pool):
         """Empty pool should fallback to management apikey."""
         mock_router = MagicMock()
@@ -277,31 +354,265 @@ class TestStreamingFallback:
         used_keys = []
         call_count = [0]  # Use list to avoid closure issues
 
-        async def mock_stream(model, messages, base_url, api_key, **kwargs):
+        def build_raw_response(
+            status_code: int,
+            body: bytes | None = None,
+            stream_chunks: list[bytes] | None = None,
+        ) -> RawStreamResponse:
+            response = MagicMock()
+            response.status_code = status_code
+            response.headers = {"content-type": "text/event-stream" if stream_chunks else "application/json"}
+            response.request = httpx.Request("POST", "http://api.example.com/gpt-4/v1/chat/completions")
+            response.aread = AsyncMock(return_value=body or b"")
+            response.aclose = AsyncMock()
+
+            async def mock_aiter_raw():
+                for chunk in stream_chunks or []:
+                    yield chunk
+
+            response.aiter_raw = mock_aiter_raw
+            return RawStreamResponse(response=response)
+
+        async def mock_open_stream(model, messages, base_url, api_key, **kwargs):
             used_keys.append(api_key)
             current_count = call_count[0]
             call_count[0] += 1
 
             if current_count == 0:
-                # First call - 429
-                response = httpx.Response(429, text="Rate limited")
-                raise httpx.HTTPStatusError("429", request=None, response=response)
-            else:
-                # Second call - success
-                yield {"id": "test", "choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]}
-                yield {"id": "test", "choices": [{"delta": {}, "finish_reason": "stop"}]}
+                return build_raw_response(429, b'{"error":"rate limited"}')
+            return build_raw_response(
+                200,
+                stream_chunks=[
+                    b"event: message\nid: chunk-1\nretry: 1000\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                    b": keepalive\n\n",
+                    b"data: [DONE]\n\n",
+                ],
+            )
 
-        mock_client.chat_completion_stream = mock_stream
+        mock_client.open_chat_completion_stream = mock_open_stream
 
         proxy = ChatProxy(mock_router, mock_client)
         request = ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=True)
 
-        chunks = []
-        async for chunk in proxy.chat_stream(request, tenant=tenant_fallback):
-            chunks.append(chunk)
+        prepared = await proxy.chat_stream(request, tenant=tenant_fallback)
+        chunks = [chunk async for chunk in prepared.stream]
 
         assert used_keys == ["sk-key-1", "sk-key-2"]
-        assert len(chunks) > 0
+        assert prepared.status_code == 200
+        assert b"".join(chunks).startswith(b"event: message\nid: chunk-1\nretry: 1000\n")
+
+    @pytest.mark.asyncio
+    async def test_stream_retryable_status_codes_are_code_defined(self, tenant_fallback, monkeypatch):
+        """Code-defined pre-stream retryable statuses should trigger fallback."""
+        monkeypatch.setattr(
+            "mini_router.proxy.strategies.DEFAULT_RETRYABLE_STATUS_CODES",
+            frozenset({429, 503}),
+        )
+        monkeypatch.setattr(
+            "mini_router.proxy.chat_proxy.DEFAULT_RETRYABLE_STATUS_CODES",
+            frozenset({429, 503}),
+        )
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        used_keys = []
+        call_count = [0]
+
+        def build_raw_response(status_code: int, stream_chunks: list[bytes] | None = None) -> RawStreamResponse:
+            response = MagicMock()
+            response.status_code = status_code
+            response.headers = {"content-type": "text/event-stream" if stream_chunks else "application/json"}
+            response.request = httpx.Request("POST", "http://api.example.com/gpt-4/v1/chat/completions")
+            response.aread = AsyncMock(return_value=b'{"error":"upstream"}')
+            response.aclose = AsyncMock()
+
+            async def mock_aiter_raw():
+                for chunk in stream_chunks or []:
+                    yield chunk
+
+            response.aiter_raw = mock_aiter_raw
+            return RawStreamResponse(response=response)
+
+        async def mock_open_stream(model, messages, base_url, api_key, **kwargs):
+            used_keys.append(api_key)
+            current = call_count[0]
+            call_count[0] += 1
+            if current == 0:
+                return build_raw_response(503)
+            return build_raw_response(200, [b"data: [DONE]\n\n"])
+
+        mock_client.open_chat_completion_stream = mock_open_stream
+
+        proxy = ChatProxy(mock_router, mock_client)
+        prepared = await proxy.chat_stream(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=True),
+            tenant=tenant_fallback,
+        )
+
+        assert prepared.status_code == 200
+        assert used_keys == ["sk-key-1", "sk-key-2"]
+
+    @pytest.mark.asyncio
+    async def test_stream_pool_exhaustion_returns_final_upstream_error(self, tenant_fallback):
+        """All retryable pre-stream failures should return the final upstream error unchanged."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        used_keys = []
+
+        async def mock_open_stream(model, messages, base_url, api_key, **kwargs):
+            used_keys.append(api_key)
+            body = f'{{"error":"{api_key}"}}'.encode()
+            response = MagicMock()
+            response.status_code = 429
+            response.headers = {"content-type": "application/json", "x-upstream": "retry"}
+            response.request = httpx.Request("POST", "http://api.example.com/gpt-4/v1/chat/completions")
+            response.aread = AsyncMock(return_value=body)
+            response.aclose = AsyncMock()
+
+            async def mock_aiter_raw():
+                yield body
+
+            response.aiter_raw = mock_aiter_raw
+            return RawStreamResponse(response=response)
+
+        mock_client.open_chat_completion_stream = mock_open_stream
+
+        proxy = ChatProxy(mock_router, mock_client)
+        prepared = await proxy.chat_stream(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=True),
+            tenant=tenant_fallback,
+        )
+
+        assert used_keys == ["sk-key-1", "sk-key-2", "sk-key-3"]
+        assert prepared.stream is None
+        assert prepared.status_code == 429
+        assert prepared.body == b'{"error":"sk-key-3"}'
+        assert prepared.headers["x-upstream"] == "retry"
+
+    @pytest.mark.asyncio
+    async def test_stream_error_body_preserves_raw_compressed_bytes(self, tenant_fallback):
+        """Pre-stream upstream errors should preserve compressed bodies and encoding headers."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        compressed_body = gzip.compress(b'{"error":"compressed"}')
+
+        async def mock_open_stream(model, messages, base_url, api_key, **kwargs):
+            response = MagicMock()
+            response.status_code = 500
+            response.headers = {
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+            }
+            response.request = httpx.Request("POST", "http://api.example.com/gpt-4/v1/chat/completions")
+            response.aread = AsyncMock(return_value=b'{"error":"decoded"}')
+            response.aclose = AsyncMock()
+
+            async def mock_aiter_raw():
+                yield compressed_body[:8]
+                yield compressed_body[8:]
+
+            response.aiter_raw = mock_aiter_raw
+            return RawStreamResponse(response=response)
+
+        mock_client.open_chat_completion_stream = mock_open_stream
+
+        proxy = ChatProxy(mock_router, mock_client)
+        prepared = await proxy.chat_stream(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=True),
+            tenant=tenant_fallback,
+        )
+
+        assert prepared.status_code == 500
+        assert prepared.headers["content-encoding"] == "gzip"
+        assert prepared.body == compressed_body
+
+    @pytest.mark.asyncio
+    async def test_stream_non_retryable_status_bypasses_fallback(self, tenant_fallback):
+        """Non-retryable pre-stream statuses should not trigger fallback."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        used_keys = []
+
+        async def mock_open_stream(model, messages, base_url, api_key, **kwargs):
+            body = b'{"error":"server"}'
+            used_keys.append(api_key)
+            response = MagicMock()
+            response.status_code = 500
+            response.headers = {"content-type": "application/json"}
+            response.request = httpx.Request("POST", "http://api.example.com/gpt-4/v1/chat/completions")
+            response.aread = AsyncMock(return_value=body)
+            response.aclose = AsyncMock()
+
+            async def mock_aiter_raw():
+                yield body
+
+            response.aiter_raw = mock_aiter_raw
+            return RawStreamResponse(response=response)
+
+        mock_client.open_chat_completion_stream = mock_open_stream
+
+        proxy = ChatProxy(mock_router, mock_client)
+        prepared = await proxy.chat_stream(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=True),
+            tenant=tenant_fallback,
+        )
+
+        assert used_keys == ["sk-key-1"]
+        assert prepared.status_code == 500
+        assert prepared.body == b'{"error":"server"}'
+
+    @pytest.mark.asyncio
+    async def test_stream_midstream_failure_does_not_retry(self, tenant_fallback):
+        """Once downstream streaming starts, fallback must not switch keys."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        used_keys = []
+
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/event-stream"}
+        response.request = httpx.Request("POST", "http://api.example.com/gpt-4/v1/chat/completions")
+        response.aread = AsyncMock(return_value=b"")
+        response.aclose = AsyncMock()
+
+        async def mock_aiter_raw():
+            yield b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"
+            raise httpx.ReadError("stream dropped")
+
+        response.aiter_raw = mock_aiter_raw
+
+        async def mock_open_stream(model, messages, base_url, api_key, **kwargs):
+            used_keys.append(api_key)
+            return RawStreamResponse(response=response)
+
+        mock_client.open_chat_completion_stream = mock_open_stream
+
+        proxy = ChatProxy(mock_router, mock_client)
+        prepared = await proxy.chat_stream(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=True),
+            tenant=tenant_fallback,
+        )
+
+        stream = prepared.stream
+        first_chunk = await anext(stream)
+        assert first_chunk.startswith(b"data:")
+        with pytest.raises(httpx.ReadError):
+            await anext(stream)
+        assert used_keys == ["sk-key-1"]
 
 
 class TestRoundRobinMode:

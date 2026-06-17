@@ -11,6 +11,7 @@ from mini_router.client import OpenAIClient
 from mini_router.config.config import Decision, DecisionAction, RouterConfig, SelectionConfig
 from mini_router.decision.engine import Engine
 from mini_router.metrics.latency import LatencyTracker
+from mini_router.request_log_context import with_request_log_context
 from mini_router.plugin.cache import CacheEntry, MemoryCache, SemanticCache
 from mini_router.signal_layer.classifier import (
     ComplexityClassifier,
@@ -227,8 +228,10 @@ class Router:
         if cache_entry:
             logger.info(
                 "cache_hit",
-                query=request.query[:50],
-                similarity=cache_entry.metadata.get("similarity"),
+                **with_request_log_context(
+                    query=request.query[:50],
+                    similarity=cache_entry.metadata.get("similarity"),
+                ),
             )
             return RoutingResult(
                 cache_hit=True,
@@ -240,11 +243,13 @@ class Router:
 
         logger.debug(
             "signals_extracted",
-            query=request.query[:50],
-            keyword_matches=signals.keyword_rules,
-            intent=signals.get_intent_label(),
-            has_pii=signals.has_pii(),
-            complexity=signals.get_complexity_level(),
+            **with_request_log_context(
+                query=request.query[:50],
+                keyword_matches=signals.keyword_rules,
+                intent=signals.get_intent_label(),
+                has_pii=signals.has_pii(),
+                complexity=signals.get_complexity_level(),
+            ),
         )
 
         # 3. Evaluate decisions (use tenant-specific or default)
@@ -259,7 +264,10 @@ class Router:
             decision_result = self.decision_engine.evaluate(signals)
 
         if decision_result is None:
-            logger.warning("no_matching_decision", query=request.query[:50])
+            logger.warning(
+                "no_matching_decision",
+                **with_request_log_context(query=request.query[:50]),
+            )
             return RoutingResult(
                 signals=signals,
                 confidence=0.0,
@@ -269,8 +277,10 @@ class Router:
         if decision_result.decision.action == DecisionAction.REJECT:
             logger.info(
                 "request_rejected",
-                decision=decision_result.decision.name,
-                reason=decision_result.decision.reject_message,
+                **with_request_log_context(
+                    decision=decision_result.decision.name,
+                    reason=decision_result.decision.reject_message,
+                ),
             )
             return RoutingResult(
                 decision_name=decision_result.decision.name,
@@ -284,7 +294,10 @@ class Router:
 
         # 4. Select model
         if not decision_result.decision.model_refs:
-            logger.warning("no_models_configured", decision=decision_result.decision.name)
+            logger.warning(
+                "no_models_configured",
+                **with_request_log_context(decision=decision_result.decision.name),
+            )
             return RoutingResult(
                 decision_name=decision_result.decision.name,
                 matched_rules=decision_result.matched_rules,
@@ -317,10 +330,12 @@ class Router:
 
         logger.info(
             "request_routed",
-            query=request.query[:50],
-            model=selection_result.selected_model,
-            decision=decision_result.decision.name,
-            confidence=selection_result.confidence,
+            **with_request_log_context(
+                query=request.query[:50],
+                model=selection_result.selected_model,
+                decision=decision_result.decision.name,
+                confidence=selection_result.confidence,
+            ),
         )
 
         return RoutingResult(

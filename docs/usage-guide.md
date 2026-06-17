@@ -276,7 +276,7 @@ CREATE TABLE mini_router_apikey_pool (
 ```bash
 curl -X POST http://localhost:8080/v1/route \
   -H "Content-Type: application/json" \
-  -d '{"query": "写一个 Python 函数计算斐波那契数列"}'
+  -d '{"messages": [{"role": "user", "content": "写一个 Python 函数计算斐波那契数列"}]}'
 
 # 响应:
 {
@@ -294,7 +294,7 @@ curl -X POST http://localhost:8080/v1/route \
 curl -X POST http://localhost:8080/v1/route \
   -H "Authorization: Bearer sk-tenant-key" \
   -H "Content-Type: application/json" \
-  -d '{"query": "写一个 Python 函数计算斐波那契数列"}'
+  -d '{"messages": [{"role": "user", "content": "写一个 Python 函数计算斐波那契数列"}]}'
 
 # 响应（使用租户专属路由规则）:
 {
@@ -460,13 +460,13 @@ curl http://localhost:8080/healthz
 # 测试路由决策（全局）
 curl -X POST http://localhost:8080/v1/route \
   -H "Content-Type: application/json" \
-  -d '{"query": "Hello"}'
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
 
 # 测试路由决策（租户）
 curl -X POST http://localhost:8080/v1/route \
   -H "Authorization: Bearer sk-tenant-key" \
   -H "Content-Type: application/json" \
-  -d '{"query": "Hello"}'
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
 
 # 测试 Chat Completions
 curl -X POST http://localhost:8080/v1/chat/completions \

@@ -2,12 +2,49 @@
 
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 import structlog
 
+from mini_router.request_log_context import with_request_log_context
+
 logger = structlog.get_logger()
+
+
+@dataclass
+class RawStreamResponse:
+    """Raw upstream streaming response."""
+
+    response: httpx.Response
+
+    @property
+    def status_code(self) -> int:
+        """Expose upstream status code."""
+        return self.response.status_code
+
+    @property
+    def headers(self) -> httpx.Headers:
+        """Expose upstream response headers."""
+        return self.response.headers
+
+    async def aiter_raw(self) -> AsyncGenerator[bytes, None]:
+        """Yield raw upstream bytes without SSE parsing."""
+        async for chunk in self.response.aiter_raw():
+            yield chunk
+
+    async def aread(self) -> bytes:
+        """Read the full upstream body."""
+        return await self.response.aread()
+
+    async def aread_raw(self) -> bytes:
+        """Read the full upstream body without content decoding."""
+        return b"".join([part async for part in self.response.aiter_raw()])
+
+    async def aclose(self) -> None:
+        """Close the upstream response."""
+        await self.response.aclose()
 
 
 class OpenAIClient:
@@ -89,7 +126,10 @@ class OpenAIClient:
         }
 
         url = f"{effective_base_url.rstrip('/')}/chat/completions"
-        logger.info("api_call_start", url=url, model=model, timeout=self.timeout)
+        logger.info(
+            "api_call_start",
+            **with_request_log_context(url=url, model=model, timeout=self.timeout),
+        )
 
         try:
             response = await self.client.post(
@@ -99,33 +139,42 @@ class OpenAIClient:
             )
             response.raise_for_status()
             result = response.json()
-            logger.info("api_call_success", url=url, model=model)
+            logger.info(
+                "api_call_success",
+                **with_request_log_context(url=url, model=model),
+            )
             return result
         except httpx.HTTPStatusError as e:
             logger.error(
                 "api_http_error",
-                url=url,
-                model=model,
-                status_code=e.response.status_code,
-                response_text=e.response.text[:500] if e.response.text else None,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    status_code=e.response.status_code,
+                    response_text=e.response.text[:500] if e.response.text else None,
+                ),
             )
             raise
         except httpx.TimeoutException as e:
             logger.error(
                 "api_timeout_error",
-                url=url,
-                model=model,
-                timeout=self.timeout,
-                error_type=type(e).__name__,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    timeout=self.timeout,
+                    error_type=type(e).__name__,
+                ),
             )
             raise
         except httpx.RequestError as e:
             logger.error(
                 "api_request_error",
-                url=url,
-                model=model,
-                error=str(e),
-                error_type=type(e).__name__,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                ),
             )
             raise
 
@@ -137,7 +186,7 @@ class OpenAIClient:
         api_key: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Stream chat completion with SSE.
+        """Stream chat completion with parsed SSE chunks.
 
         Args:
             model: Model name
@@ -154,13 +203,81 @@ class OpenAIClient:
         Raises:
             ValueError: If base_url is not provided (neither in call nor constructor)
         """
-        # Use provided values or fall back to deprecated constructor values
+        raw_response = await self.open_chat_completion_stream(
+            model=model,
+            messages=messages,
+            base_url=base_url,
+            api_key=api_key,
+            **kwargs,
+        )
+
+        try:
+            raw_response.response.raise_for_status()
+            async for line in raw_response.response.aiter_lines():
+                if not line:
+                    continue
+
+                if line.startswith("data: "):
+                    data = line[6:]
+
+                    if data == "[DONE]":
+                        break
+
+                    try:
+                        chunk = json.loads(data)
+                        yield chunk
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "stream_json_decode_error",
+                            **with_request_log_context(line=line[:100]),
+                        )
+                        continue
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "stream_http_error",
+                **with_request_log_context(
+                    url=str(e.request.url) if e.request else None,
+                    model=model,
+                    status_code=e.response.status_code,
+                ),
+            )
+            raise
+        except httpx.TimeoutException:
+            logger.error(
+                "stream_timeout_error",
+                **with_request_log_context(
+                    model=model,
+                    timeout=self.timeout,
+                ),
+            )
+            raise
+        except httpx.RequestError as e:
+            logger.error(
+                "stream_request_error",
+                **with_request_log_context(
+                    model=model,
+                    error=str(e),
+                ),
+            )
+            raise
+        finally:
+            await raw_response.aclose()
+
+    async def open_chat_completion_stream(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        base_url: str | None = None,
+        api_key: str | None = None,
+        **kwargs: Any,
+    ) -> RawStreamResponse:
+        """Open a raw upstream streaming response without parsing SSE."""
         effective_base_url = base_url or self._deprecated_base_url
         effective_api_key = api_key or self._deprecated_api_key
 
         if not effective_base_url:
             raise ValueError(
-                "base_url is required. Pass it to chat_completion_stream() or provide "
+                "base_url is required. Pass it to open_chat_completion_stream() or provide "
                 "it in the constructor (deprecated)."
             )
 
@@ -176,60 +293,38 @@ class OpenAIClient:
         }
 
         url = f"{effective_base_url.rstrip('/')}/chat/completions"
-        logger.info("stream_api_call_start", url=url, model=model)
+        logger.info(
+            "stream_api_call_start",
+            **with_request_log_context(url=url, model=model),
+        )
 
         try:
-            async with self.client.stream(
+            request = self.client.build_request(
                 "POST",
                 url,
                 headers=headers,
                 json=payload,
-            ) as response:
-                response.raise_for_status()
-
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-
-                    # SSE format: "data: {...}"
-                    if line.startswith("data: "):
-                        data = line[6:]  # Remove "data: " prefix
-
-                        if data == "[DONE]":
-                            break
-
-                        try:
-                            chunk = json.loads(data)
-                            yield chunk
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "stream_json_decode_error",
-                                line=line[:100],
-                            )
-                            continue
-
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "stream_http_error",
-                url=url,
-                model=model,
-                status_code=e.response.status_code,
             )
-            raise
+            response = await self.client.send(request, stream=True)
+            return RawStreamResponse(response=response)
         except httpx.TimeoutException:
             logger.error(
                 "stream_timeout_error",
-                url=url,
-                model=model,
-                timeout=self.timeout,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    timeout=self.timeout,
+                ),
             )
             raise
         except httpx.RequestError as e:
             logger.error(
                 "stream_request_error",
-                url=url,
-                model=model,
-                error=str(e),
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    error=str(e),
+                ),
             )
             raise
 

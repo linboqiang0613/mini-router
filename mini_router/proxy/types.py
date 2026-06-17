@@ -2,6 +2,7 @@
 
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -100,3 +101,15 @@ class ChatProxyResult(BaseModel):
     tokens_generated: int = 0
     success: bool = True
     error: str | None = None
+
+
+class PreparedChatStreamResponse(BaseModel):
+    """Prepared response for transparent streaming chat requests."""
+
+    status_code: int
+    headers: dict[str, str] = Field(default_factory=dict)
+    media_type: str | None = None
+    body: bytes | None = None
+    stream: AsyncGenerator[bytes, None] | None = None
+
+    model_config = {"arbitrary_types_allowed": True}
