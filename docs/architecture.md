@@ -590,46 +590,22 @@ class ChatProxy:
     async def chat_stream(
         self,
         request: ChatRequest
-    ) -> AsyncGenerator[ChatChunk, None]:
-        # 1. 提取查询
-        query = self._extract_query(request.messages)
-
-        # 2. 路由决策
-        routing_result = await self.router.route(
-            RoutingRequest(query=query)
-        )
-        selected_model = routing_result.selected_model
-
-        # 3. 记录开始时间
-        start_time = time.time()
-        first_token_time = None
-
-        # 4. 流式调用模型
-        async for chunk in self.client.chat_completion_stream(
-            model=selected_model,
-            messages=[msg.model_dump() for msg in request.messages],
-        ):
-            if first_token_time is None:
-                first_token_time = time.time()
-            yield ChatChunk(model=selected_model, choices=...)
-
-        # 5. 记录延迟
-        total_latency = time.time() - start_time
-        ttft = first_token_time - start_time if first_token_time else None
-
-        await self.router.record_latency(
-            model=selected_model,
-            latency_seconds=total_latency,
-            ttft=ttft,
-        )
+    ) -> PreparedChatStreamResponse:
+        # 1. 提取查询并路由
+        # 2. 建立上游 raw stream，先读取 HTTP status / headers
+        # 3. 若 status 命中代码定义的 retryable status set 且尚未向下游发字节，则切换下一把 key
+        # 4. 成功后透明透传上游 SSE bytes
+        # 5. observer 旁路解析 TTFT / TPOT / usage，不改写响应
 ```
 
 #### 5.2.3 SSE 流式响应格式
 
 ```
-data: {"id":"chatcmpl-xxx","choices":[{"delta":{"content":"Hello"}}]}
+event: message
+id: 1
+data: {"choices":[{"delta":{"content":"Hello"}}]}
 
-data: {"id":"chatcmpl-xxx","choices":[{"delta":{"content":" World"}}]}
+: keepalive
 
 data: [DONE]
 ```

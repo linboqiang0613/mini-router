@@ -1,5 +1,6 @@
 """Chat proxy service - routes and forwards chat requests."""
 
+import json
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -18,21 +19,114 @@ from mini_router.proxy.request_pipeline import (
     extract_apikey,
     extract_query,
 )
-from mini_router.proxy.strategies import ApiKeyStrategy, create_apikey_strategy
+from mini_router.proxy.strategies import (
+    DEFAULT_RETRYABLE_STATUS_CODES,
+    ApiKeyStrategy,
+    create_apikey_strategy,
+)
 from mini_router.proxy.types import (
     ChatChoice,
-    ChatChoiceDelta,
-    ChatChunk,
     ChatMessage,
+    ChatUsage,
+    PreparedChatStreamResponse,
     ChatRequest,
     ChatResponse,
-    ChatUsage,
 )
 from mini_router.router.router import Router
-from mini_router.signal_layer.classifier import OpenAIClient
+from mini_router.client.openai_client import OpenAIClient
 from mini_router.tenant.types import TenantConfig, build_base_url
 
 logger = structlog.get_logger()
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+}
+
+
+class _TransparentStreamObserver:
+    """Best-effort observer for transparently forwarded SSE traffic."""
+
+    def __init__(self) -> None:
+        self.first_token_time: float | None = None
+        self.chunk_count = 0
+        self.finish_reason: str | None = None
+        self.usage: ChatUsage | None = None
+        self.metric_provenance = "unavailable"
+        self._buffer = b""
+
+    def observe(self, chunk: bytes) -> None:
+        """Inspect streamed bytes without mutating them."""
+        try:
+            self._buffer += chunk
+            while True:
+                separator = self._find_event_separator(self._buffer)
+                if separator is None:
+                    return
+                event, self._buffer = self._buffer[:separator], self._buffer[separator:]
+                self._buffer = self._trim_separator_prefix(self._buffer)
+                self._process_event(event)
+        except Exception:
+            # Observer failures must never affect passthrough behavior.
+            return
+
+    @staticmethod
+    def _find_event_separator(buffer: bytes) -> int | None:
+        for marker in (b"\r\n\r\n", b"\n\n"):
+            index = buffer.find(marker)
+            if index != -1:
+                return index
+        return None
+
+    @staticmethod
+    def _trim_separator_prefix(buffer: bytes) -> bytes:
+        if buffer.startswith(b"\r\n\r\n"):
+            return buffer[4:]
+        if buffer.startswith(b"\n\n"):
+            return buffer[2:]
+        return buffer
+
+    def _process_event(self, event: bytes) -> None:
+        text = event.decode("utf-8", errors="ignore")
+        data_lines: list[str] = []
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+
+        if not data_lines:
+            return
+
+        data = "\n".join(data_lines)
+        if data == "[DONE]":
+            self.finish_reason = self.finish_reason or "stream_completed"
+            return
+
+        payload = json.loads(data)
+        usage = payload.get("usage")
+        if usage:
+            self.usage = ChatUsage(
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+            )
+            self.metric_provenance = "exact"
+
+        for choice in payload.get("choices", []):
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            tool_calls = delta.get("tool_calls")
+            if (content or tool_calls) and self.first_token_time is None:
+                self.first_token_time = time.time()
+            if content or tool_calls:
+                self.chunk_count += 1
+            if choice.get("finish_reason"):
+                self.finish_reason = choice["finish_reason"]
 
 
 class ChatProxy:
@@ -97,40 +191,61 @@ class ChatProxy:
             return tenant.apikey_pool
         return [tenant.apikey]
 
-    def _process_stream_chunk(
-        self, chunk: dict[str, Any], selected_model: str
-    ) -> ChatChunk:
-        """Process a streaming chunk into ChatChunk format.
+    def _build_chat_kwargs(self, request: ChatRequest) -> dict[str, Any]:
+        """Build shared chat completion kwargs from a chat request."""
+        kwargs: dict[str, Any] = {}
+        if request.temperature is not None:
+            kwargs["temperature"] = request.temperature
+        if request.max_tokens is not None:
+            kwargs["max_tokens"] = request.max_tokens
+        if request.top_p is not None:
+            kwargs["top_p"] = request.top_p
+        if request.stop is not None:
+            kwargs["stop"] = request.stop
+        if request.presence_penalty is not None:
+            kwargs["presence_penalty"] = request.presence_penalty
+        if request.frequency_penalty is not None:
+            kwargs["frequency_penalty"] = request.frequency_penalty
+        if request.chat_template_kwargs is not None:
+            kwargs["chat_template_kwargs"] = request.chat_template_kwargs
+        if request.tools is not None:
+            kwargs["tools"] = request.tools
+        if request.tool_choice is not None:
+            kwargs["tool_choice"] = request.tool_choice
+        return kwargs
 
-        Args:
-            chunk: Raw chunk from API
-            selected_model: Model name
+    @staticmethod
+    def _split_response_headers(headers: httpx.Headers) -> tuple[str | None, dict[str, str]]:
+        """Split upstream headers into media_type and forwardable headers."""
+        media_type = headers.get("content-type")
+        forward_headers: dict[str, str] = {}
+        for key, value in headers.items():
+            if key.lower() in HOP_BY_HOP_HEADERS or key.lower() == "content-type":
+                continue
+            forward_headers[key] = value
+        return media_type, forward_headers
 
-        Returns:
-            Formatted ChatChunk
-        """
-        choices = chunk.get("choices", [])
-        chat_choices = []
-
-        for choice in choices:
-            delta = choice.get("delta", {})
-            chat_choices.append(
-                ChatChoice(
-                    index=choice.get("index", 0),
-                    delta=ChatChoiceDelta(
-                        role=delta.get("role"),
-                        content=delta.get("content") if delta.get("content") else None,
-                        tool_calls=delta.get("tool_calls"),
-                    ),
-                    finish_reason=choice.get("finish_reason"),
-                )
-            )
-
-        return ChatChunk(
-            id=chunk.get("id", f"chatcmpl-{selected_model}"),
-            model=selected_model,
-            choices=chat_choices,
+    @staticmethod
+    def _build_status_error(response: httpx.Response) -> httpx.HTTPStatusError:
+        """Wrap a raw response as an HTTPStatusError for retry strategy checks."""
+        return httpx.HTTPStatusError(
+            message=f"{response.status_code} upstream response",
+            request=response.request,
+            response=response,
         )
+
+    @staticmethod
+    def _routing_error_body(message: str) -> bytes:
+        """Serialize a router-generated pre-stream error body."""
+        return json.dumps(
+            {
+                "error": {
+                    "type": "routing_error",
+                    "message": message,
+                    "code": "no_model_selected",
+                }
+            }
+        ).encode("utf-8")
 
     async def _record_stream_latency(
         self,
@@ -183,22 +298,16 @@ class ChatProxy:
         tenant: TenantConfig | None = None,
         strategy: ApiKeyStrategy | None = None,
         trace: RequestTrace | None = None,
-    ) -> AsyncGenerator[ChatChunk, None]:
-        """Process a streaming chat request.
+    ) -> PreparedChatStreamResponse:
+        """Prepare a transparent streaming chat response.
 
         Args:
             request: The chat request to process
             tenant: Optional tenant configuration for tenant-specific routing
             strategy: Optional API key selection strategy. If None, uses tenant config.
 
-        Yields ChatChunk objects for SSE streaming.
-
-        Flow:
-        1. Extract query from messages
-        2. Route to select model (if not specified)
-        3. Forward request to selected model
-        4. Stream response back
-        5. Record latency automatically
+        Returns a prepared response containing either a raw upstream stream
+        or a pre-stream error body.
         """
         if request.model:
             logger.info(
@@ -207,7 +316,7 @@ class ChatProxy:
                 tenant_id=tenant.tenant_id if tenant else None,
             )
 
-        query, routing_result = await self._resolve_routing_state(
+        _query, routing_result = await self._resolve_routing_state(
             request,
             tenant=tenant,
             trace=trace,
@@ -220,159 +329,138 @@ class ChatProxy:
                 trace.record_completion(
                     status="error",
                     finish_reason="no_model_selected",
+                    final_upstream_status=503,
                 )
                 logger.info("request_finished", **trace.finished_event())
-            # Return error chunk
-            yield ChatChunk(
-                model="unknown",
-                choices=[
-                    ChatChoice(
-                        delta=ChatChoiceDelta(
-                            role="assistant",
-                            content="Error: No model selected for routing.",
-                        ),
-                        finish_reason="error",
-                    )
-                ],
+            return PreparedChatStreamResponse(
+                status_code=503,
+                media_type="application/json",
+                body=self._routing_error_body("No model selected for routing."),
+                headers={"Cache-Control": "no-cache"},
             )
-            return
 
-        # Record timing
         start_time = time.time()
-        first_token_time: float | None = None
-        chunk_count = 0
+        kwargs = self._build_chat_kwargs(request)
+        messages = [msg.model_dump() for msg in request.messages]
+        base_url = build_base_url(tenant.base_url_template, selected_model) if tenant else None
+        retryable_status_codes = list(DEFAULT_RETRYABLE_STATUS_CODES)
 
         try:
-            # Build kwargs for API call
-            kwargs: dict[str, Any] = {}
-            if request.temperature is not None:
-                kwargs["temperature"] = request.temperature
-            if request.max_tokens is not None:
-                kwargs["max_tokens"] = request.max_tokens
-            if request.top_p is not None:
-                kwargs["top_p"] = request.top_p
-            if request.stop is not None:
-                kwargs["stop"] = request.stop
-            if request.presence_penalty is not None:
-                kwargs["presence_penalty"] = request.presence_penalty
-            if request.frequency_penalty is not None:
-                kwargs["frequency_penalty"] = request.frequency_penalty
-            if request.chat_template_kwargs is not None:
-                kwargs["chat_template_kwargs"] = request.chat_template_kwargs
-            if request.tools is not None:
-                kwargs["tools"] = request.tools
-            if request.tool_choice is not None:
-                kwargs["tool_choice"] = request.tool_choice
-
-            messages = [msg.model_dump() for msg in request.messages]
-
-            # Build base_url from tenant template or use default
-            base_url = None
-            if tenant:
-                base_url = build_base_url(tenant.base_url_template, selected_model)
-
-            # Get strategy and pool
+            current_key: str | None = None
+            pool: list[str] = []
             if tenant:
                 if strategy is None:
                     strategy = create_apikey_strategy(
-                        tenant.apikey_pool_mode, self.apikey_selector
+                        tenant.apikey_pool_mode,
+                        self.apikey_selector,
+                        retryable_status_codes=retryable_status_codes,
                     )
                 pool = self._get_apikey_pool(tenant)
-
-                # Unified key selection via strategy
                 current_key = await strategy.select_key(pool, tenant.tenant_id)
 
-                # Unified streaming with strategy-based retry
-                while current_key:
+            attempt_count = 0
+            while True:
+                attempt_count += 1
+                raw_response = await self.client.open_chat_completion_stream(
+                    model=selected_model,
+                    messages=messages,
+                    base_url=base_url,
+                    api_key=current_key,
+                    **kwargs,
+                )
+                status_code = raw_response.status_code
+
+                if status_code < 200 or status_code >= 300:
+                    status_error = self._build_status_error(raw_response.response)
+                    next_key = (
+                        strategy.next_key_on_error(pool, current_key or "", status_error)
+                        if strategy is not None
+                        else None
+                    )
+                    if next_key is not None:
+                        await raw_response.aclose()
+                        current_key = next_key
+                        continue
+
+                    body = await raw_response.aread_raw()
+                    await raw_response.aclose()
+                    media_type, headers = self._split_response_headers(raw_response.headers)
+                    if trace is not None:
+                        trace.record_completion(
+                            status="error",
+                            finish_reason="stream_error",
+                            attempt_count=attempt_count,
+                            final_upstream_status=status_code,
+                        )
+                        logger.info("request_finished", **trace.finished_event())
+                    return PreparedChatStreamResponse(
+                        status_code=status_code,
+                        headers=headers,
+                        media_type=media_type,
+                        body=body,
+                    )
+
+                media_type, headers = self._split_response_headers(raw_response.headers)
+
+                async def forward_stream() -> AsyncGenerator[bytes, None]:
+                    observer = _TransparentStreamObserver()
                     try:
-                        async for chunk in self.client.chat_completion_stream(
-                            model=selected_model,
-                            messages=messages,
-                            base_url=base_url,
-                            api_key=current_key,
-                            **kwargs,
-                        ):
-                            if first_token_time is None:
-                                first_token_time = time.time()
+                        async for chunk in raw_response.aiter_raw():
+                            observer.observe(chunk)
+                            yield chunk
 
-                            # Count tokens
-                            choices = chunk.get("choices", [])
-                            for choice in choices:
-                                delta = choice.get("delta", {})
-                                content = delta.get("content", "")
-                                if content:
-                                    chunk_count += 1
-
-                            yield self._process_stream_chunk(chunk, selected_model)
-
-                        # Success - record latency and exit
                         total_latency, ttft, tpot = await self._record_stream_latency(
                             start_time,
-                            first_token_time,
-                            chunk_count,
+                            observer.first_token_time,
+                            observer.chunk_count,
                             selected_model,
-                            tenant.tenant_id,
+                            tenant.tenant_id if tenant else None,
                             decision_name,
                         )
                         if trace is not None:
                             trace.record_completion(
                                 status="completed",
-                                finish_reason="stream_completed",
+                                finish_reason=observer.finish_reason or "stream_completed",
                                 latency_seconds=total_latency,
                                 ttft=ttft,
                                 tpot=tpot,
-                                chunk_count=chunk_count,
+                                chunk_count=observer.chunk_count,
+                                usage=observer.usage,
+                                metric_provenance=observer.metric_provenance,
+                                attempt_count=attempt_count,
+                                final_upstream_status=status_code,
                             )
                             logger.info("request_finished", **trace.finished_event())
-                        return
-
                     except Exception as e:
-                        next_key = strategy.next_key_on_error(pool, current_key, e)
-                        if next_key is None:
-                            raise  # No retry
-                        current_key = next_key
-                        # Reset timing for retry
-                        first_token_time = None
-                        chunk_count = 0
-            else:
-                # No tenant - direct stream without strategy
-                async for chunk in self.client.chat_completion_stream(
-                    model=selected_model,
-                    messages=messages,
-                    base_url=base_url,
-                    api_key=None,
-                    **kwargs,
-                ):
-                    if first_token_time is None:
-                        first_token_time = time.time()
+                        logger.error(
+                            "chat_proxy_stream_error",
+                            model=selected_model,
+                            tenant_id=tenant.tenant_id if tenant else None,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                        )
+                        if trace is not None:
+                            trace.record_completion(
+                                status="error",
+                                finish_reason="stream_error",
+                                chunk_count=observer.chunk_count,
+                                usage=observer.usage,
+                                metric_provenance=observer.metric_provenance,
+                                attempt_count=attempt_count,
+                                final_upstream_status=status_code,
+                                error=e,
+                            )
+                            logger.info("request_finished", **trace.finished_event())
+                        raise
+                    finally:
+                        await raw_response.aclose()
 
-                    choices = chunk.get("choices", [])
-                    for choice in choices:
-                        delta = choice.get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            chunk_count += 1
-
-                    yield self._process_stream_chunk(chunk, selected_model)
-
-                total_latency, ttft, tpot = await self._record_stream_latency(
-                    start_time,
-                    first_token_time,
-                    chunk_count,
-                    selected_model,
-                    None,
-                    decision_name,
+                return PreparedChatStreamResponse(
+                    status_code=status_code,
+                    headers=headers,
+                    media_type=media_type,
+                    stream=forward_stream(),
                 )
-                if trace is not None:
-                    trace.record_completion(
-                        status="completed",
-                        finish_reason="stream_completed",
-                        latency_seconds=total_latency,
-                        ttft=ttft,
-                        tpot=tpot,
-                        chunk_count=chunk_count,
-                    )
-                    logger.info("request_finished", **trace.finished_event())
 
         except Exception as e:
             logger.error(
@@ -386,22 +474,10 @@ class ChatProxy:
                 trace.record_completion(
                     status="error",
                     finish_reason="stream_error",
-                    chunk_count=chunk_count,
                     error=e,
                 )
                 logger.info("request_finished", **trace.finished_event())
-            yield ChatChunk(
-                model=selected_model or "unknown",
-                choices=[
-                    ChatChoice(
-                        delta=ChatChoiceDelta(
-                            role="assistant",
-                            content=f"\n\n[Error: {str(e)}]",
-                        ),
-                        finish_reason="error",
-                    )
-                ],
-            )
+            raise
 
     async def chat(
         self,
@@ -426,7 +502,7 @@ class ChatProxy:
                 tenant_id=tenant.tenant_id if tenant else None,
             )
 
-        query, routing_result = await self._resolve_routing_state(
+        _query, routing_result = await self._resolve_routing_state(
             request,
             tenant=tenant,
             trace=trace,
@@ -489,7 +565,9 @@ class ChatProxy:
             if tenant:
                 if strategy is None:
                     strategy = create_apikey_strategy(
-                        tenant.apikey_pool_mode, self.apikey_selector
+                        tenant.apikey_pool_mode,
+                        self.apikey_selector,
+                        retryable_status_codes=list(DEFAULT_RETRYABLE_STATUS_CODES),
                     )
                 pool = self._get_apikey_pool(tenant)
 

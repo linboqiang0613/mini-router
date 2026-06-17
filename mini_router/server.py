@@ -10,7 +10,7 @@ import structlog
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from mini_router.config.config import RouterConfig
@@ -37,6 +37,11 @@ from mini_router.tenant import (
 from mini_router.tenant.manager import TenantManager
 
 logger = structlog.get_logger()
+
+STREAMING_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
 
 
 class RouteResponse(BaseModel):
@@ -635,29 +640,34 @@ async def chat_completions(
     trace = context.trace
 
     if request.stream:
-        # Return SSE streaming response
-        async def generate_sse() -> AsyncGenerator[str, None]:
-            try:
-                async for chunk in proxy.chat_stream(request, tenant=tenant, trace=trace):
-                    yield chunk.to_sse()
-                yield "data: [DONE]\n\n"
-            except Exception as e:
-                trace.record_completion(
-                    status="error",
-                    finish_reason="chat_request_error",
-                    error=e,
-                )
-                logger.info("request_finished", **trace.finished_event())
-                raise
+        try:
+            prepared = await proxy.chat_stream(request, tenant=tenant, trace=trace)
+        except Exception as e:
+            trace.record_completion(
+                status="error",
+                finish_reason="chat_request_error",
+                error=e,
+            )
+            logger.info("request_finished", **trace.finished_event())
+            raise
+
+        if prepared.stream is None:
+            return Response(
+                content=prepared.body or b"",
+                status_code=prepared.status_code,
+                media_type=prepared.media_type,
+                headers=prepared.headers,
+            )
+
+        stream_headers = dict(prepared.headers)
+        for key, value in STREAMING_RESPONSE_HEADERS.items():
+            stream_headers.setdefault(key, value)
 
         return StreamingResponse(
-            generate_sse(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # Disable nginx buffering
-            },
+            prepared.stream,
+            status_code=prepared.status_code,
+            media_type=prepared.media_type or "text/event-stream",
+            headers=stream_headers,
         )
     else:
         # Return complete JSON response

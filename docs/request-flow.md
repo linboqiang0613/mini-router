@@ -151,7 +151,7 @@ Authorization: Bearer sk-tenant-001-key
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  OpenAIClient.chat_completion_stream()                          │
+│  OpenAIClient.open_chat_completion_stream()                     │
 │                                                                 │
 │  使用租户配置构建请求:                                           │
 │    base_url = build_base_url(tenant.base_url_template, model)   │
@@ -169,22 +169,20 @@ Authorization: Bearer sk-tenant-001-key
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  SSE 流式返回                                                    │
+│  透明透传 SSE 流                                                │
 │                                                                 │
-│  data: {"choices":[{"delta":{"content":"def "}}]}               │
-│  data: {"choices":[{"delta":{"content":"hello"}}]}              │
-│  data: {"choices":[{"delta":{"content":"_world"}}]}             │
-│  ...                                                            │
-│  data: [DONE]                                                   │
+│  router 不解析/重组事件内容                                      │
+│  router 保留 event/id/retry/data/comment/空行                    │
+│  router 仅在建流前根据可配置状态码决定是否切换下一把 key         │
 └─────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  自动记录延迟                                                    │
+│  Observer 旁路记录延迟                                          │
 │                                                                 │
-│  - TTFT: 0.3s (首 token 时间)                                   │
+│  - TTFT: best-effort                                            │
 │  - Total latency: 2.5s                                          │
-│  - TPOT: 0.02s (平均每 token 时间)                              │
+│  - TPOT / usage: exact 或 unavailable                           │
 │                                                                 │
 │  → 更新 LatencyTracker                                          │
 │  → 影响后续 latency_aware 选择                                   │
@@ -439,23 +437,21 @@ Authorization: Bearer sk-dev-team-001-abc123xyz
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Step 5: 流式返回                                                 │
+│ Step 5: 透明透传流式返回                                        │
 │                                                                 │
-│ data: {"choices":[{"delta":{"content":"def "}}]}                │
-│ data: {"choices":[{"delta":{"content":"hello"}}]}               │
-│ data: {"choices":[{"delta":{"content":"_world"}}]}              │
-│ data: [DONE]                                                    │
+│ 上游返回什么，调用方就看到什么                                   │
+│ router 不追加自定义 chunk，也不补自己的 [DONE]                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### 响应
 
 ```
-data: {"id":"chatcmpl-xxx","model":"gpt-4o","choices":[{"delta":{"content":"def "}}]}
+event: message
+id: 1
+data: {"choices":[{"delta":{"content":"def "}}]}
 
-data: {"id":"chatcmpl-xxx","model":"gpt-4o","choices":[{"delta":{"content":"hello"}}]}
-
-data: {"id":"chatcmpl-xxx","model":"gpt-4o","choices":[{"delta":{"content":"_world"}}]}
+: keepalive
 
 data: [DONE]
 ```

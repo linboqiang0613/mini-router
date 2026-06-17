@@ -12,6 +12,8 @@ import httpx
 if TYPE_CHECKING:
     from mini_router.proxy.apikey_selector import ApiKeyPoolSelector
 
+DEFAULT_RETRYABLE_STATUS_CODES = frozenset({429})
+
 
 class ApiKeyStrategy(ABC):
     """API Key selection strategy - only responsible for key selection.
@@ -113,15 +115,17 @@ class RoundRobinStrategy(ApiKeyStrategy):
 
 
 class FallbackStrategy(ApiKeyStrategy):
-    """Fallback: use first key, switch to next on 429.
+    """Fallback: use first key, switch to next on configured retryable statuses.
 
-    Always selects first key from pool. On 429 rate limit error,
+    Always selects first key from pool. On configured retryable HTTP status errors,
     returns next key in sequence. On other errors, returns None.
     """
 
-    def __init__(self) -> None:
-        """Initialize fallback strategy (no state needed)."""
-        pass
+    def __init__(self, retryable_status_codes: list[int] | None = None) -> None:
+        """Initialize fallback strategy with retryable status configuration."""
+        self._retryable_status_codes = set(
+            retryable_status_codes or DEFAULT_RETRYABLE_STATUS_CODES
+        )
 
     async def select_key(self, pool: list[str], tenant_id: str) -> str:
         """Select first key from pool.
@@ -138,19 +142,18 @@ class FallbackStrategy(ApiKeyStrategy):
     def next_key_on_error(
         self, pool: list[str], current_key: str, error: Exception
     ) -> str | None:
-        """Return next key only on 429 rate limit error.
+        """Return next key only on retryable upstream HTTP status errors.
 
         Args:
             pool: List of available API keys
             current_key: The key that was rate limited
-            error: The exception (checked for 429 status)
+            error: The exception (checked for configured HTTP status)
 
         Returns:
-            Next key in pool after current_key if 429, else None
+            Next key in pool after current_key if status is retryable, else None
         """
-        # Only handle HTTP 429 rate limit errors
         if isinstance(error, httpx.HTTPStatusError):
-            if error.response.status_code == 429:
+            if error.response.status_code in self._retryable_status_codes:
                 try:
                     current_idx = pool.index(current_key)
                     if current_idx < len(pool) - 1:
@@ -162,7 +165,9 @@ class FallbackStrategy(ApiKeyStrategy):
 
 
 def create_apikey_strategy(
-    mode: str | None, selector: "ApiKeyPoolSelector"
+    mode: str | None,
+    selector: "ApiKeyPoolSelector",
+    retryable_status_codes: list[int] | None = None,
 ) -> ApiKeyStrategy:
     """Factory function to create appropriate strategy based on mode.
 
@@ -174,6 +179,6 @@ def create_apikey_strategy(
         ApiKeyStrategy instance (RoundRobinStrategy or FallbackStrategy)
     """
     if mode == "fallback":
-        return FallbackStrategy()
+        return FallbackStrategy(retryable_status_codes=retryable_status_codes)
     # Default to round_robin (including None)
     return RoundRobinStrategy(selector)

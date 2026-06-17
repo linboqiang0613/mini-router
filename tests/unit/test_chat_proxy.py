@@ -1,5 +1,6 @@
 """Tests for chat proxy."""
 
+import httpx
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -283,8 +284,9 @@ class TestChatProxy:
 
     @pytest.mark.asyncio
     async def test_chat_stream_records_chunk_count_on_completion(self) -> None:
-        """Streaming chat should emit request_finished after stream completion."""
+        """Transparent streaming should emit request_finished after stream completion."""
         from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.client.openai_client import RawStreamResponse
 
         mock_router = MagicMock()
         mock_router.route = AsyncMock(
@@ -306,12 +308,22 @@ class TestChatProxy:
         )
         mock_router.record_latency = AsyncMock()
 
-        async def mock_stream(*args, **kwargs):
-            yield {"choices": [{"delta": {"content": "Hello"}}]}
-            yield {"choices": [{"delta": {"content": " world"}}]}
+        async def mock_aiter_raw():
+            yield b"data: {\"choices\": [{\"delta\": {\"content\": \"Hello\"}}]}\n\n"
+            yield b"data: {\"choices\": [{\"delta\": {\"content\": \" world\"}}]}\n\n"
+            yield b"data: [DONE]\n\n"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "text/event-stream"}
+        mock_response.request = httpx.Request("POST", "http://api.example.com/v1/chat/completions")
+        mock_response.aiter_raw = mock_aiter_raw
+        mock_response.aclose = AsyncMock()
 
         mock_client = MagicMock()
-        mock_client.chat_completion_stream = mock_stream
+        mock_client.open_chat_completion_stream = AsyncMock(
+            return_value=RawStreamResponse(response=mock_response)
+        )
 
         proxy = ChatProxy(mock_router, mock_client)
         trace = RequestTrace(
@@ -323,15 +335,14 @@ class TestChatProxy:
         )
 
         with patch("mini_router.proxy.chat_proxy.logger.info") as mock_info:
-            chunks = [
-                chunk
-                async for chunk in proxy.chat_stream(
-                    ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=True),
-                    trace=trace,
-                )
-            ]
+            prepared = await proxy.chat_stream(
+                ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=True),
+                trace=trace,
+            )
+            chunks = [chunk async for chunk in prepared.stream]
 
-        assert len(chunks) == 2
+        assert prepared.status_code == 200
+        assert b"".join(chunks).endswith(b"data: [DONE]\n\n")
         assert trace.status == "completed"
         assert trace.finish_reason == "stream_completed"
         assert trace.chunk_count == 2
@@ -414,9 +425,13 @@ class TestDynamicClient:
         # Mock httpx.AsyncClient to avoid proxy issues
         mock_httpx_client = MagicMock()
 
-        # Mock the stream response
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
+        mock_response.aclose = AsyncMock()
+        mock_response.request = httpx.Request(
+            "POST",
+            "http://dynamic-api.com/v1/chat/completions",
+        )
 
         # Simulate SSE lines
         async def mock_aiter_lines():
@@ -424,12 +439,8 @@ class TestDynamicClient:
             yield "data: [DONE]"
 
         mock_response.aiter_lines = mock_aiter_lines
-
-        # Mock the stream method to return an async context manager
-        mock_stream_context = MagicMock()
-        mock_stream_context.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_context.__aexit__ = AsyncMock(return_value=None)
-        mock_httpx_client.stream = MagicMock(return_value=mock_stream_context)
+        mock_httpx_client.build_request.return_value = mock_response.request
+        mock_httpx_client.send = AsyncMock(return_value=mock_response)
 
         with patch("httpx.AsyncClient", return_value=mock_httpx_client):
             from mini_router.client.openai_client import OpenAIClient
@@ -450,10 +461,10 @@ class TestDynamicClient:
             assert chunks[0]["choices"][0]["delta"]["content"] == "Hello"
 
             # Verify the call was made with correct URL
-            call_args = mock_httpx_client.stream.call_args
-            # stream is called with ("POST", url, headers=headers, json=payload)
-            assert call_args[0][1] == "http://dynamic-api.com/v1/chat/completions"
-            assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+            build_call = mock_httpx_client.build_request.call_args
+            assert build_call[0][1] == "http://dynamic-api.com/v1/chat/completions"
+            assert "Bearer dynamic-key" in build_call[1]["headers"]["Authorization"]
+            mock_httpx_client.send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_chat_completion_backward_compatibility(self) -> None:

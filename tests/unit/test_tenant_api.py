@@ -577,6 +577,91 @@ class TestChatWithTenantAuth:
         assert "request_started" in event_names
         assert "request_finished" in event_names
 
+    def test_streaming_chat_passthroughs_prepared_upstream_error(self, isolated_manager) -> None:
+        """Streaming chat should return pre-stream upstream errors without wrapping them."""
+        manager = isolated_manager
+
+        tenant = TenantConfig(
+            tenant_id="stream-error-tenant",
+            apikey="sk-stream-error-key",
+            name="Stream Error Tenant",
+            enabled=True,
+            base_url_template="http://api.example.com/{model}/v1",
+        )
+        manager.create(tenant)
+
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import PreparedChatStreamResponse
+
+        async def mock_chat_stream(self, request, tenant=None, trace=None):
+            return PreparedChatStreamResponse(
+                status_code=429,
+                media_type="application/json",
+                headers={"x-upstream": "rate-limit"},
+                body=b'{"error":"rate limited"}',
+            )
+
+        with patch.object(ChatProxy, "chat_stream", mock_chat_stream):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": True,
+                    },
+                    headers={"Authorization": "Bearer sk-stream-error-key"},
+                )
+
+        assert response.status_code == 429
+        assert response.headers["x-upstream"] == "rate-limit"
+        assert response.text == '{"error":"rate limited"}'
+
+    def test_streaming_chat_passthroughs_raw_sse_bytes(self, isolated_manager) -> None:
+        """Streaming chat should forward raw SSE bytes without router-added framing."""
+        manager = isolated_manager
+
+        tenant = TenantConfig(
+            tenant_id="stream-success-tenant",
+            apikey="sk-stream-success-key",
+            name="Stream Success Tenant",
+            enabled=True,
+            base_url_template="http://api.example.com/{model}/v1",
+        )
+        manager.create(tenant)
+
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import PreparedChatStreamResponse
+
+        async def raw_stream():
+            yield b"event: message\nid: 1\ndata: hello\n\n"
+            yield b": keepalive\n\n"
+            yield b"data: [DONE]\n\n"
+
+        async def mock_chat_stream(self, request, tenant=None, trace=None):
+            return PreparedChatStreamResponse(
+                status_code=200,
+                media_type="text/event-stream",
+                headers={"x-upstream": "stream"},
+                stream=raw_stream(),
+            )
+
+        with patch.object(ChatProxy, "chat_stream", mock_chat_stream):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": True,
+                    },
+                    headers={"Authorization": "Bearer sk-stream-success-key"},
+                )
+
+        assert response.status_code == 200
+        assert response.headers["x-upstream"] == "stream"
+        assert response.headers["cache-control"] == "no-cache"
+        assert response.headers["x-accel-buffering"] == "no"
+        assert response.text == "event: message\nid: 1\ndata: hello\n\n: keepalive\n\ndata: [DONE]\n\n"
+
     def test_route_request_lifecycle_logs(self, isolated_manager) -> None:
         """Route endpoint should emit request_started and request_finished with bounded preview."""
         manager = isolated_manager

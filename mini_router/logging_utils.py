@@ -104,6 +104,9 @@ class RequestTrace:
     tpot: float | None = None
     chunk_count: int | None = None
     usage: ChatUsage | None = None
+    metric_provenance: str | None = None
+    attempt_count: int | None = None
+    final_upstream_status: int | None = None
     status: str = "started"
     error_type: str | None = None
     error_message: str | None = None
@@ -141,6 +144,9 @@ class RequestTrace:
         tpot: float | None = None,
         chunk_count: int | None = None,
         usage: ChatUsage | None = None,
+        metric_provenance: str | None = None,
+        attempt_count: int | None = None,
+        final_upstream_status: int | None = None,
         error: Exception | None = None,
     ) -> None:
         """Attach completion data to the trace."""
@@ -151,6 +157,9 @@ class RequestTrace:
         self.tpot = tpot
         self.chunk_count = chunk_count
         self.usage = usage
+        self.metric_provenance = metric_provenance
+        self.attempt_count = attempt_count
+        self.final_upstream_status = final_upstream_status
         if error is not None:
             self.error_type = type(error).__name__
             self.error_message = str(error)
@@ -194,10 +203,13 @@ class RequestTrace:
                 "tpot": self.tpot,
                 "chunk_count": self.chunk_count,
                 "usage": serialize_chat_usage(self.usage),
+                "metric_provenance": self.metric_provenance,
             },
             "result": {
                 "finish_reason": self.finish_reason,
                 "error_type": self.error_type,
                 "error_message": self.error_message,
+                "attempt_count": self.attempt_count,
+                "final_upstream_status": self.final_upstream_status,
             },
         }
