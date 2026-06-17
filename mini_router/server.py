@@ -20,6 +20,7 @@ from mini_router.config.loader import (
     load_config_from_db,
 )
 from mini_router.database import ConfigRepository, ConfigSyncService, DatabaseConnection
+from mini_router.logging_utils import generate_request_id
 from mini_router.proxy import ChatProxy, ChatRequest
 from mini_router.proxy.request_pipeline import (
     AuthenticationError,
@@ -28,6 +29,10 @@ from mini_router.proxy.request_pipeline import (
     build_authenticated_chat_context,
 )
 from mini_router.router.router import Router
+from mini_router.request_log_context import (
+    bind_request_log_context,
+    reset_request_log_context,
+)
 from mini_router.tenant import (
     TenantConfig,
     TenantCreateRequest,
@@ -614,6 +619,8 @@ async def chat_completions(
     router = get_router()
     proxy = get_chat_proxy()
     manager = get_tenant_manager()
+    request_id = generate_request_id()
+    context_token = bind_request_log_context(request_id=request_id)
 
     try:
         context = await build_authenticated_chat_context(
@@ -622,10 +629,13 @@ async def chat_completions(
             authorization,
             request,
             event_logger=logger,
+            request_id=request_id,
         )
     except AuthenticationError as e:
+        reset_request_log_context(context_token)
         raise HTTPException(status_code=401, detail=str(e))
     except TenantDisabledError as e:
+        reset_request_log_context(context_token)
         raise HTTPException(status_code=403, detail=str(e))
     except RoutingPipelineError as e:
         e.trace.record_completion(
@@ -634,6 +644,7 @@ async def chat_completions(
             error=e.cause,
         )
         logger.info("request_finished", **e.trace.finished_event())
+        reset_request_log_context(context_token)
         raise e.cause
 
     tenant = context.tenant
@@ -649,22 +660,35 @@ async def chat_completions(
                 error=e,
             )
             logger.info("request_finished", **trace.finished_event())
+            reset_request_log_context(context_token)
             raise
 
         if prepared.stream is None:
-            return Response(
-                content=prepared.body or b"",
-                status_code=prepared.status_code,
-                media_type=prepared.media_type,
-                headers=prepared.headers,
-            )
+            try:
+                return Response(
+                    content=prepared.body or b"",
+                    status_code=prepared.status_code,
+                    media_type=prepared.media_type,
+                    headers=prepared.headers,
+                )
+            finally:
+                reset_request_log_context(context_token)
+
+        async def request_scoped_stream() -> AsyncGenerator[bytes, None]:
+            stream_token = bind_request_log_context(request_id=request_id)
+            try:
+                async for chunk in prepared.stream:
+                    yield chunk
+            finally:
+                reset_request_log_context(stream_token)
 
         stream_headers = dict(prepared.headers)
         for key, value in STREAMING_RESPONSE_HEADERS.items():
             stream_headers.setdefault(key, value)
 
+        reset_request_log_context(context_token)
         return StreamingResponse(
-            prepared.stream,
+            request_scoped_stream(),
             status_code=prepared.status_code,
             media_type=prepared.media_type or "text/event-stream",
             headers=stream_headers,
@@ -681,6 +705,8 @@ async def chat_completions(
             )
             logger.info("request_finished", **trace.finished_event())
             raise
+        finally:
+            reset_request_log_context(context_token)
 
 
 # === Main ===

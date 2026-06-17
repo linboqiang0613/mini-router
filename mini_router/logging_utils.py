@@ -14,7 +14,25 @@ if TYPE_CHECKING:
     from mini_router.proxy.types import ChatUsage
 
 
-def normalize_query_preview(query: str, limit: int = 20) -> tuple[str, int]:
+def generate_request_id() -> str:
+    """Generate a compact request correlation identifier."""
+    return uuid.uuid4().hex[:12]
+
+
+def mask_api_key(api_key: str | None) -> str | None:
+    """Mask an API key for structured logs without emitting the raw value."""
+    if not api_key:
+        return None
+
+    length = len(api_key)
+    if length <= 3:
+        return "*" * length
+    if length <= 10:
+        return api_key[:3] + ("*" * (length - 3))
+    return api_key[:6] + ("*" * (length - 10)) + api_key[-4:]
+
+
+def normalize_query_preview(query: str, limit: int = 50) -> tuple[str, int]:
     """Build a bounded query preview for lifecycle logs."""
     normalized = query.strip()
     return normalized[:limit], len(normalized)
@@ -90,7 +108,7 @@ class RequestTrace:
     query: str
     stream: bool | None = None
     user: str | None = None
-    request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    request_id: str = field(default_factory=generate_request_id)
     started_at: float = field(default_factory=time.time)
     query_preview: str = field(init=False)
     query_length: int = field(init=False)
@@ -107,6 +125,7 @@ class RequestTrace:
     metric_provenance: str | None = None
     attempt_count: int | None = None
     final_upstream_status: int | None = None
+    final_upstream_api_key: str | None = None
     status: str = "started"
     error_type: str | None = None
     error_message: str | None = None
@@ -147,6 +166,7 @@ class RequestTrace:
         metric_provenance: str | None = None,
         attempt_count: int | None = None,
         final_upstream_status: int | None = None,
+        final_upstream_api_key: str | None = None,
         error: Exception | None = None,
     ) -> None:
         """Attach completion data to the trace."""
@@ -160,6 +180,7 @@ class RequestTrace:
         self.metric_provenance = metric_provenance
         self.attempt_count = attempt_count
         self.final_upstream_status = final_upstream_status
+        self.final_upstream_api_key = final_upstream_api_key
         if error is not None:
             self.error_type = type(error).__name__
             self.error_message = str(error)
@@ -211,5 +232,8 @@ class RequestTrace:
                 "error_message": self.error_message,
                 "attempt_count": self.attempt_count,
                 "final_upstream_status": self.final_upstream_status,
+                "final_upstream_apikey_masked": mask_api_key(
+                    self.final_upstream_api_key
+                ),
             },
         }

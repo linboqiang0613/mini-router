@@ -153,6 +153,7 @@ async def build_authenticated_routing_context(
     user_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     stream: bool | None = None,
+    request_id: str | None = None,
 ) -> RoutingPipelineContext:
     """Authenticate a tenant and execute the shared routing pipeline."""
     apikey = extract_apikey(authorization)
@@ -160,14 +161,17 @@ async def build_authenticated_routing_context(
         raise AuthenticationError("Missing or invalid Authorization header")
 
     tenant = authenticate_tenant(tenant_manager, apikey)
-    trace = RequestTrace(
-        path=path,
-        method="POST",
-        tenant_id=tenant.tenant_id,
-        query=query,
-        stream=stream,
-        user=user_id,
-    )
+    trace_kwargs: dict[str, Any] = {
+        "path": path,
+        "method": "POST",
+        "tenant_id": tenant.tenant_id,
+        "query": query,
+        "stream": stream,
+        "user": user_id,
+    }
+    if request_id is not None:
+        trace_kwargs["request_id"] = request_id
+    trace = RequestTrace(**trace_kwargs)
     event_logger.info("request_started", **trace.started_event())
 
     try:
@@ -192,6 +196,7 @@ async def build_authenticated_chat_context(
     event_logger: Any = logger,
     path: str = "/v1/chat/completions",
     stream: bool | None = None,
+    request_id: str | None = None,
 ) -> RoutingPipelineContext:
     """Authenticate and route a chat request through the shared pipeline."""
     query = extract_query(request.messages)
@@ -205,4 +210,5 @@ async def build_authenticated_chat_context(
         user_id=request.user,
         metadata=request.metadata,
         stream=request.stream if stream is None else stream,
+        request_id=request_id,
     )

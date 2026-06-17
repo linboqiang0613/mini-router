@@ -32,6 +32,7 @@ from mini_router.proxy.types import (
     ChatRequest,
     ChatResponse,
 )
+from mini_router.request_log_context import with_request_log_context
 from mini_router.router.router import Router
 from mini_router.client.openai_client import OpenAIClient
 from mini_router.tenant.types import TenantConfig, build_base_url
@@ -282,13 +283,15 @@ class ChatProxy:
 
         logger.info(
             "chat_proxy_stream_completed",
-            model=model,
-            decision=decision_name,
-            tenant_id=tenant_id,
-            latency=total_latency,
-            ttft=ttft,
-            tpot=tpot,
-            chunk_count=chunk_count,
+            **with_request_log_context(
+                model=model,
+                decision=decision_name,
+                tenant_id=tenant_id,
+                latency=total_latency,
+                ttft=ttft,
+                tpot=tpot,
+                chunk_count=chunk_count,
+            ),
         )
         return total_latency, ttft, tpot
 
@@ -312,8 +315,10 @@ class ChatProxy:
         if request.model:
             logger.info(
                 "requested_model_ignored",
-                requested_model=request.model,
-                tenant_id=tenant.tenant_id if tenant else None,
+                **with_request_log_context(
+                    requested_model=request.model,
+                    tenant_id=tenant.tenant_id if tenant else None,
+                ),
             )
 
         _query, routing_result = await self._resolve_routing_state(
@@ -347,6 +352,7 @@ class ChatProxy:
 
         try:
             current_key: str | None = None
+            last_attempt_key: str | None = None
             pool: list[str] = []
             if tenant:
                 if strategy is None:
@@ -361,6 +367,7 @@ class ChatProxy:
             attempt_count = 0
             while True:
                 attempt_count += 1
+                last_attempt_key = current_key
                 raw_response = await self.client.open_chat_completion_stream(
                     model=selected_model,
                     messages=messages,
@@ -391,6 +398,7 @@ class ChatProxy:
                             finish_reason="stream_error",
                             attempt_count=attempt_count,
                             final_upstream_status=status_code,
+                            final_upstream_api_key=last_attempt_key,
                         )
                         logger.info("request_finished", **trace.finished_event())
                     return PreparedChatStreamResponse(
@@ -429,15 +437,18 @@ class ChatProxy:
                                 metric_provenance=observer.metric_provenance,
                                 attempt_count=attempt_count,
                                 final_upstream_status=status_code,
+                                final_upstream_api_key=last_attempt_key,
                             )
                             logger.info("request_finished", **trace.finished_event())
                     except Exception as e:
                         logger.error(
                             "chat_proxy_stream_error",
-                            model=selected_model,
-                            tenant_id=tenant.tenant_id if tenant else None,
-                            error=str(e),
-                            error_type=type(e).__name__,
+                            **with_request_log_context(
+                                model=selected_model,
+                                tenant_id=tenant.tenant_id if tenant else None,
+                                error=str(e),
+                                error_type=type(e).__name__,
+                            ),
                         )
                         if trace is not None:
                             trace.record_completion(
@@ -448,6 +459,7 @@ class ChatProxy:
                                 metric_provenance=observer.metric_provenance,
                                 attempt_count=attempt_count,
                                 final_upstream_status=status_code,
+                                final_upstream_api_key=last_attempt_key,
                                 error=e,
                             )
                             logger.info("request_finished", **trace.finished_event())
@@ -465,15 +477,18 @@ class ChatProxy:
         except Exception as e:
             logger.error(
                 "chat_proxy_stream_error",
-                model=selected_model,
-                tenant_id=tenant.tenant_id if tenant else None,
-                error=str(e),
-                error_type=type(e).__name__,
+                **with_request_log_context(
+                    model=selected_model,
+                    tenant_id=tenant.tenant_id if tenant else None,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                ),
             )
             if trace is not None:
                 trace.record_completion(
                     status="error",
                     finish_reason="stream_error",
+                    final_upstream_api_key=last_attempt_key,
                     error=e,
                 )
                 logger.info("request_finished", **trace.finished_event())
@@ -498,8 +513,10 @@ class ChatProxy:
         if request.model:
             logger.info(
                 "requested_model_ignored",
-                requested_model=request.model,
-                tenant_id=tenant.tenant_id if tenant else None,
+                **with_request_log_context(
+                    requested_model=request.model,
+                    tenant_id=tenant.tenant_id if tenant else None,
+                ),
             )
 
         _query, routing_result = await self._resolve_routing_state(
@@ -531,6 +548,7 @@ class ChatProxy:
             )
 
         start_time = time.time()
+        last_attempt_key: str | None = None
 
         try:
             # Build kwargs for API call
@@ -577,6 +595,7 @@ class ChatProxy:
                 # Unified call with strategy-based retry
                 while current_key:
                     try:
+                        last_attempt_key = current_key
                         response = await self.client.chat_completion(
                             model=selected_model,
                             messages=messages,
@@ -636,11 +655,13 @@ class ChatProxy:
 
             logger.info(
                 "chat_proxy_completed",
-                model=selected_model,
-                decision=decision_name,
-                tenant_id=tenant.tenant_id if tenant else None,
-                latency=total_latency,
-                tokens=usage.completion_tokens if usage else None,
+                **with_request_log_context(
+                    model=selected_model,
+                    decision=decision_name,
+                    tenant_id=tenant.tenant_id if tenant else None,
+                    latency=total_latency,
+                    tokens=usage.completion_tokens if usage else None,
+                ),
             )
             if trace is not None:
                 trace.record_completion(
@@ -648,6 +669,7 @@ class ChatProxy:
                     finish_reason="chat_completed",
                     latency_seconds=total_latency,
                     usage=usage,
+                    final_upstream_api_key=last_attempt_key,
                 )
                 logger.info("request_finished", **trace.finished_event())
 
@@ -661,15 +683,18 @@ class ChatProxy:
         except Exception as e:
             logger.error(
                 "chat_proxy_error",
-                model=selected_model,
-                tenant_id=tenant.tenant_id if tenant else None,
-                error=str(e),
-                error_type=type(e).__name__,
+                **with_request_log_context(
+                    model=selected_model,
+                    tenant_id=tenant.tenant_id if tenant else None,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                ),
             )
             if trace is not None:
                 trace.record_completion(
                     status="error",
                     finish_reason="chat_error",
+                    final_upstream_api_key=last_attempt_key,
                     error=e,
                 )
                 logger.info("request_finished", **trace.finished_event())

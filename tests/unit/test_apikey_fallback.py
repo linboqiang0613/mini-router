@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
+from mini_router.logging_utils import RequestTrace
 from mini_router.proxy.chat_proxy import ChatProxy
 from mini_router.client.openai_client import RawStreamResponse
 from mini_router.proxy.types import ChatRequest, ChatMessage, ChatChunk, ChatChoice, ChatChoiceDelta
@@ -200,6 +201,80 @@ class TestFallbackMode:
         assert used_keys == ["sk-key-1"]
         assert response.choices[0].finish_reason == "error"
         assert "500" in response.choices[0].message.content
+
+    @pytest.mark.asyncio
+    async def test_final_upstream_key_is_masked_after_fallback_success(self, tenant_fallback):
+        """Finished trace should record the masked final upstream key after fallback."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_response = {
+            "id": "test",
+            "choices": [{"message": {"role": "assistant", "content": "Success"}, "finish_reason": "stop"}],
+        }
+
+        call_count = [0]
+
+        async def mock_chat_completion(model, messages, base_url, api_key, **kwargs):
+            current_count = call_count[0]
+            call_count[0] += 1
+            if current_count == 0:
+                response = httpx.Response(429, text="Rate limited")
+                raise httpx.HTTPStatusError("429", request=None, response=response)
+            return mock_response
+
+        mock_client.chat_completion = mock_chat_completion
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id=tenant_fallback.tenant_id,
+            query="Hi",
+            stream=False,
+        )
+
+        await proxy.chat(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=False),
+            tenant=tenant_fallback,
+            trace=trace,
+        )
+
+        assert trace.finished_event()["result"]["final_upstream_apikey_masked"] == "sk-*****"
+
+    @pytest.mark.asyncio
+    async def test_final_upstream_key_is_masked_after_fallback_exhaustion(self, tenant_fallback):
+        """Finished trace should record the masked final upstream key after fallback exhaustion."""
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(return_value=MagicMock(selected_model="gpt-4", decision_name="test"))
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+
+        async def mock_chat_completion(model, messages, base_url, api_key, **kwargs):
+            response = httpx.Response(429, text="Rate limited")
+            raise httpx.HTTPStatusError("429", request=None, response=response)
+
+        mock_client.chat_completion = mock_chat_completion
+
+        proxy = ChatProxy(mock_router, mock_client)
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id=tenant_fallback.tenant_id,
+            query="Hi",
+            stream=False,
+        )
+
+        await proxy.chat(
+            ChatRequest(messages=[ChatMessage(role="user", content="Hi")], stream=False),
+            tenant=tenant_fallback,
+            trace=trace,
+        )
+
+        assert trace.finished_event()["result"]["final_upstream_apikey_masked"] == "sk-*****"
 
     @pytest.mark.asyncio
     async def test_empty_pool_uses_management_key(self, tenant_empty_pool):

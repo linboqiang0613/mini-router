@@ -689,9 +689,62 @@ class TestChatWithTenantAuth:
         finished_call = next(
             call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
         )
-        assert started_call.kwargs["query_preview"] == "01234567890123456789"
-        assert finished_call.kwargs["query_preview"] == "01234567890123456789"
+        assert started_call.kwargs["query_preview"] == "01234567890123456789EXTRA"
+        assert finished_call.kwargs["query_preview"] == "01234567890123456789EXTRA"
         assert finished_call.kwargs["status"] == "completed"
+
+    def test_chat_request_lifecycle_logs_use_50_char_preview(self, isolated_manager) -> None:
+        """Chat lifecycle logs should keep a bounded 50-character preview."""
+        manager = isolated_manager
+        tenant = TenantConfig(
+            tenant_id="chat-log-tenant",
+            apikey="sk-chat-log-key",
+            name="Chat Log Tenant",
+            enabled=True,
+            base_url_template="http://api.example.com/{model}/v1",
+        )
+        manager.create(tenant)
+
+        from mini_router.proxy.chat_proxy import ChatProxy
+        from mini_router.proxy.types import ChatResponse, ChatChoice, ChatMessage
+
+        long_query = "0123456789" * 7
+
+        async def mock_chat(self, request, tenant=None, trace=None):
+            assert trace is not None
+            trace.record_completion(status="completed", finish_reason="chat_completed")
+            mini_router.server.logger.info("request_finished", **trace.finished_event())
+            return ChatResponse(
+                model="gpt-4",
+                choices=[
+                    ChatChoice(
+                        message=ChatMessage(role="assistant", content="Hello!"),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        with patch.object(ChatProxy, "chat", mock_chat):
+            with patch("mini_router.server.logger.info") as mock_log_info:
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "messages": [{"role": "user", "content": long_query}],
+                            "stream": False,
+                        },
+                        headers={"Authorization": "Bearer sk-chat-log-key"},
+                    )
+
+        assert response.status_code == 200
+        started_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_started"
+        )
+        finished_call = next(
+            call for call in mock_log_info.call_args_list if call.args[0] == "request_finished"
+        )
+        assert started_call.kwargs["query_preview"] == long_query[:50]
+        assert finished_call.kwargs["query_preview"] == long_query[:50]
 
     def test_route_request_logs_no_match_status(self, isolated_manager) -> None:
         """Route endpoint should not label unmatched routing as completed."""

@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 import structlog
 
+from mini_router.request_log_context import with_request_log_context
+
 logger = structlog.get_logger()
 
 
@@ -124,7 +126,10 @@ class OpenAIClient:
         }
 
         url = f"{effective_base_url.rstrip('/')}/chat/completions"
-        logger.info("api_call_start", url=url, model=model, timeout=self.timeout)
+        logger.info(
+            "api_call_start",
+            **with_request_log_context(url=url, model=model, timeout=self.timeout),
+        )
 
         try:
             response = await self.client.post(
@@ -134,33 +139,42 @@ class OpenAIClient:
             )
             response.raise_for_status()
             result = response.json()
-            logger.info("api_call_success", url=url, model=model)
+            logger.info(
+                "api_call_success",
+                **with_request_log_context(url=url, model=model),
+            )
             return result
         except httpx.HTTPStatusError as e:
             logger.error(
                 "api_http_error",
-                url=url,
-                model=model,
-                status_code=e.response.status_code,
-                response_text=e.response.text[:500] if e.response.text else None,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    status_code=e.response.status_code,
+                    response_text=e.response.text[:500] if e.response.text else None,
+                ),
             )
             raise
         except httpx.TimeoutException as e:
             logger.error(
                 "api_timeout_error",
-                url=url,
-                model=model,
-                timeout=self.timeout,
-                error_type=type(e).__name__,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    timeout=self.timeout,
+                    error_type=type(e).__name__,
+                ),
             )
             raise
         except httpx.RequestError as e:
             logger.error(
                 "api_request_error",
-                url=url,
-                model=model,
-                error=str(e),
-                error_type=type(e).__name__,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                ),
             )
             raise
 
@@ -215,29 +229,35 @@ class OpenAIClient:
                     except json.JSONDecodeError:
                         logger.warning(
                             "stream_json_decode_error",
-                            line=line[:100],
+                            **with_request_log_context(line=line[:100]),
                         )
                         continue
         except httpx.HTTPStatusError as e:
             logger.error(
                 "stream_http_error",
-                url=str(e.request.url) if e.request else None,
-                model=model,
-                status_code=e.response.status_code,
+                **with_request_log_context(
+                    url=str(e.request.url) if e.request else None,
+                    model=model,
+                    status_code=e.response.status_code,
+                ),
             )
             raise
         except httpx.TimeoutException:
             logger.error(
                 "stream_timeout_error",
-                model=model,
-                timeout=self.timeout,
+                **with_request_log_context(
+                    model=model,
+                    timeout=self.timeout,
+                ),
             )
             raise
         except httpx.RequestError as e:
             logger.error(
                 "stream_request_error",
-                model=model,
-                error=str(e),
+                **with_request_log_context(
+                    model=model,
+                    error=str(e),
+                ),
             )
             raise
         finally:
@@ -273,7 +293,10 @@ class OpenAIClient:
         }
 
         url = f"{effective_base_url.rstrip('/')}/chat/completions"
-        logger.info("stream_api_call_start", url=url, model=model)
+        logger.info(
+            "stream_api_call_start",
+            **with_request_log_context(url=url, model=model),
+        )
 
         try:
             request = self.client.build_request(
@@ -287,17 +310,21 @@ class OpenAIClient:
         except httpx.TimeoutException:
             logger.error(
                 "stream_timeout_error",
-                url=url,
-                model=model,
-                timeout=self.timeout,
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    timeout=self.timeout,
+                ),
             )
             raise
         except httpx.RequestError as e:
             logger.error(
                 "stream_request_error",
-                url=url,
-                model=model,
-                error=str(e),
+                **with_request_log_context(
+                    url=url,
+                    model=model,
+                    error=str(e),
+                ),
             )
             raise
 

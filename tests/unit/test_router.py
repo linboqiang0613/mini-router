@@ -13,6 +13,7 @@ from mini_router.config.config import (
     RuleNode,
     RuleType,
 )
+from mini_router.request_log_context import bind_request_log_context, reset_request_log_context
 from mini_router.router.router import Router, RoutingRequest
 
 
@@ -137,6 +138,42 @@ class TestRouter:
         # Both keywords match, but urgent has higher priority
         result = await router.route(RoutingRequest(query="urgent code request"))
         assert result.decision_name == "urgent_route"
+
+    @pytest.mark.asyncio
+    async def test_request_routed_log_includes_request_id(self) -> None:
+        """Routing logs should include the active request_id when present."""
+        config = RouterConfig(
+            models={"base_url": "http://localhost:8000/v1"},
+            signals={
+                "keyword_rules": [
+                    KeywordRule(name="code", keywords=["code"], operator=Operator.ANY),
+                ],
+            },
+            decisions=[
+                Decision(
+                    name="code_route",
+                    priority=10,
+                    rules=RuleNode(type=RuleType.KEYWORD, name="code"),
+                    model_refs=[ModelRef(model="code-model", weight=1.0)],
+                ),
+            ],
+            cache={"enabled": False},
+        )
+        router = Router(config)
+        token = bind_request_log_context(request_id="req-router")
+
+        try:
+            with pytest.MonkeyPatch.context() as m:
+                mock_info = MagicMock()
+                m.setattr("mini_router.router.router.logger.info", mock_info)
+                await router.route(RoutingRequest(query="code request"))
+        finally:
+            reset_request_log_context(token)
+
+        routed_call = next(
+            call for call in mock_info.call_args_list if call.args[0] == "request_routed"
+        )
+        assert routed_call.kwargs["request_id"] == "req-router"
 
 
 class TestRouterSignalLayerInit:

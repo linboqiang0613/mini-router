@@ -7,6 +7,7 @@ import structlog
 
 from mini_router.client import OpenAIClient
 from mini_router.config.config import ClassifierModelConfig, KeywordRule, Operator
+from mini_router.request_log_context import with_request_log_context
 from mini_router.signal_layer.types import SignalMatches, TaskResult, TaskType
 
 logger = structlog.get_logger()
@@ -76,16 +77,20 @@ class MLClassifierBase(Classifier):
         except asyncio.TimeoutError:
             logger.warning(
                 f"{self.name}_classifier_timeout",
-                timeout=self.config.timeout,
-                fallback=self._fallback_label,
+                **with_request_log_context(
+                    timeout=self.config.timeout,
+                    fallback=self._fallback_label,
+                ),
             )
             return self._create_fallback_result()
         except Exception as e:
             logger.error(
                 f"{self.name}_classifier_error",
-                error=str(e),
-                error_type=type(e).__name__,
-                fallback=self._fallback_label,
+                **with_request_log_context(
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    fallback=self._fallback_label,
+                ),
             )
             return self._create_fallback_result()
 

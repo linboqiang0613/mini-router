@@ -12,7 +12,11 @@ from mini_router.proxy.types import (
     ChatRequest,
     ChatResponse,
 )
-from mini_router.logging_utils import RequestTrace
+from mini_router.logging_utils import (
+    RequestTrace,
+    mask_api_key,
+)
+from mini_router.request_log_context import bind_request_log_context, reset_request_log_context
 
 
 class TestChatTypes:
@@ -108,6 +112,39 @@ class TestChatTypes:
         )
         assert response.model == "gpt-4"
         assert response.choices[0].message.content == "Hello"
+
+
+class TestLoggingHelpers:
+    """Tests for request logging helpers."""
+
+    def test_mask_api_key_long_value(self) -> None:
+        """Long API keys should preserve first 6 and last 4 characters."""
+        assert mask_api_key("sk-1234567890abcd") == "sk-123*******abcd"
+
+    def test_mask_api_key_short_value(self) -> None:
+        """Short API keys should preserve first 3 characters and mask the rest."""
+        assert mask_api_key("sk-1234") == "sk-****"
+        assert mask_api_key("abc") == "***"
+
+    def test_request_trace_finished_event_masks_final_upstream_key(self) -> None:
+        """Finished events should only expose the masked final upstream key."""
+        trace = RequestTrace(
+            path="/v1/chat/completions",
+            method="POST",
+            tenant_id="tenant-1",
+            query="Hello router",
+            stream=False,
+        )
+        trace.record_completion(
+            status="completed",
+            finish_reason="chat_completed",
+            final_upstream_api_key="sk-1234567890abcd",
+        )
+
+        assert (
+            trace.finished_event()["result"]["final_upstream_apikey_masked"]
+            == "sk-123*******abcd"
+        )
 
 
 class TestChatProxy:
@@ -348,6 +385,65 @@ class TestChatProxy:
         assert trace.chunk_count == 2
         assert any(call.args[0] == "request_finished" for call in mock_info.call_args_list)
 
+    @pytest.mark.asyncio
+    async def test_chat_proxy_completed_log_includes_request_id(self) -> None:
+        """Proxy completion logs should include the active request_id."""
+        from mini_router.proxy.chat_proxy import ChatProxy
+
+        mock_router = MagicMock()
+        mock_router.route = AsyncMock(
+            return_value=MagicMock(
+                selected_model="gpt-4",
+                decision_name="route-test",
+                matched_rules=["code_related"],
+                confidence=0.9,
+                cache_hit=False,
+                cache_response=None,
+                action=MagicMock(value="route"),
+                reject_message=None,
+                signals=None,
+                candidate_models=["gpt-4"],
+                filtered_candidate_models=["gpt-4"],
+                selection_strategy="static",
+                selection_metadata={},
+            )
+        )
+        mock_router.record_latency = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.chat_completion = AsyncMock(
+            return_value={
+                "id": "test-123",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Hello"}}
+                ],
+            }
+        )
+
+        proxy = ChatProxy(mock_router, mock_client)
+        token = bind_request_log_context(request_id="req-123")
+
+        try:
+            with patch("mini_router.proxy.chat_proxy.logger.info") as mock_info:
+                await proxy.chat(
+                    ChatRequest(messages=[ChatMessage(role="user", content="Hello router")], stream=False),
+                    trace=RequestTrace(
+                        path="/v1/chat/completions",
+                        method="POST",
+                        tenant_id="tenant-1",
+                        query="Hello router",
+                        stream=False,
+                        request_id="req-123",
+                    ),
+                )
+        finally:
+            reset_request_log_context(token)
+
+        completed_call = next(
+            call for call in mock_info.call_args_list if call.args[0] == "chat_proxy_completed"
+        )
+        assert completed_call.kwargs["request_id"] == "req-123"
+
 
 class TestDynamicClient:
     """Tests for OpenAIClient with dynamic base_url and api_key."""
@@ -384,6 +480,43 @@ class TestDynamicClient:
             call_args = mock_httpx_client.post.call_args
             assert call_args[0][0] == "http://dynamic-api.com/v1/chat/completions"
             assert "Bearer dynamic-key" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_logs_include_request_id(self) -> None:
+        """Client request logs should include the active request_id."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.post = AsyncMock()
+
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test"}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_httpx_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient", return_value=mock_httpx_client):
+            from mini_router.client.openai_client import OpenAIClient
+
+            client = OpenAIClient(timeout=60.0)
+            token = bind_request_log_context(request_id="req-456")
+
+            try:
+                with patch("mini_router.client.openai_client.logger.info") as mock_info:
+                    await client.chat_completion(
+                        model="gpt-4",
+                        messages=[{"role": "user", "content": "Hello"}],
+                        base_url="http://dynamic-api.com/v1",
+                        api_key="dynamic-key",
+                    )
+            finally:
+                reset_request_log_context(token)
+
+        start_call = next(
+            call for call in mock_info.call_args_list if call.args[0] == "api_call_start"
+        )
+        assert start_call.kwargs["request_id"] == "req-456"
 
     @pytest.mark.asyncio
     async def test_chat_completion_without_api_key(self) -> None:
