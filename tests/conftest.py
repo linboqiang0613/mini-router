@@ -13,8 +13,10 @@ from mini_router.config.config import (
     RouterConfig,
     RuleNode,
     RuleType,
+    SelectionConfig,
     SignalsConfig,
 )
+from mini_router.tenant.types import TenantConfig
 
 
 @pytest.fixture(autouse=True)
@@ -100,4 +102,40 @@ def basic_config() -> RouterConfig:
             ),
         ],
         cache={"enabled": False},
+    )
+
+
+@pytest.fixture
+def basic_tenant() -> TenantConfig:
+    """Tenant config carrying the routing decisions previously embedded in
+    basic_config.decisions, plus a default SelectionConfig.
+
+    Used by tests that exercise Router.route(decisions=tenant.decisions, ...).
+    """
+    return TenantConfig(
+        tenant_id="t-test",
+        apikey="sk-test",
+        name="Test Tenant",
+        enabled=True,
+        base_url_template="http://localhost:8000/v1",
+        timeout=120.0,
+        decisions=[
+            Decision(
+                name="route_to_code_model",
+                priority=10,
+                rules=RuleNode(type=RuleType.KEYWORD, name="code_related"),
+                model_refs=[
+                    ModelRef(model="codellama-70b", weight=1.0),
+                ],
+            ),
+            Decision(
+                name="route_to_math_model",
+                priority=5,
+                rules=RuleNode(type=RuleType.KEYWORD, name="math_related"),
+                model_refs=[
+                    ModelRef(model="llama-3-math", weight=1.0),
+                ],
+            ),
+        ],
+        selection=SelectionConfig(),
     )
