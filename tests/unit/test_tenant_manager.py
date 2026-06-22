@@ -62,6 +62,61 @@ class TestTenantManagerLoadSave:
         finally:
             Path(temp_path).unlink()
 
+    def test_save_and_load_preserves_selection(self) -> None:
+        """selection field round-trips through save/load cycle."""
+        from mini_router.config.config import (
+            LatencyAwareConfig,
+            SelectionConfig,
+            SelectionMethod,
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("")
+            f.flush()
+            temp_path = f.name
+
+        try:
+            manager = TenantManager(config_path=temp_path)
+            tenant = TenantConfig(
+                tenant_id="t-sel",
+                apikey="sk-sel-key",
+                base_url_template="http://api.example.com/{model}/v1",
+                decisions=[
+                    Decision(
+                        name="d1",
+                        priority=1,
+                        rules=RuleNode(type=RuleType.KEYWORD, name="kw"),
+                        model_refs=[ModelRef(model="m1", weight=1.0)],
+                    ),
+                ],
+                selection=SelectionConfig(
+                    strategy=SelectionMethod.LATENCY_AWARE,
+                    latency_aware=LatencyAwareConfig(
+                        tpot_percentile=75,
+                        ttft_percentile=95,
+                    ),
+                ),
+            )
+            manager.create(tenant)
+
+            # Verify YAML on disk actually carries the selection block
+            written = Path(temp_path).read_text()
+            assert "selection:" in written
+            assert "latency_aware" in written
+            assert "tpot_percentile" in written
+
+            # Round-trip: fresh manager loads and rehydrates selection
+            manager2 = TenantManager(config_path=temp_path)
+            manager2.load()
+            loaded = manager2.get_by_id("t-sel")
+
+            assert loaded is not None
+            assert loaded.selection.strategy == SelectionMethod.LATENCY_AWARE
+            assert loaded.selection.latency_aware.tpot_percentile == 75
+            assert loaded.selection.latency_aware.ttft_percentile == 95
+        finally:
+            Path(temp_path).unlink()
+
     def test_load_rejects_yaml_tenant_without_decisions(self) -> None:
         """YAML mode should reject tenants missing decisions."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:

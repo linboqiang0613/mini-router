@@ -264,3 +264,99 @@ class TestConfigRepositoryApiKeyPool:
         call_args = mock_db.execute.call_args[0]
         assert "UPDATE" in call_args[0]
         assert "is_active" in call_args[0]
+
+class TestSelectionFieldRoundTrip:
+    """Verify the per-tenant `selection` JSON field is properly written and read."""
+
+    @pytest.fixture
+    def mock_db(self):
+        mock = MagicMock(spec=DatabaseConnection)
+        mock.fetch_one = AsyncMock()
+        mock.fetch_all = AsyncMock()
+        mock.execute = AsyncMock(return_value=1)
+        return mock
+
+    @pytest.mark.asyncio
+    async def test_create_tenant_includes_selection(self, mock_db):
+        """create_tenant must serialize the selection field into the INSERT params."""
+        # next_version lookup returns "no existing rows" → version=1
+        mock_db.fetch_one.return_value = {"max_version": None}
+
+        repo = ConfigRepository(mock_db)
+        await repo.create_tenant({
+            "tenant_id": "t-sel",
+            "apikey": "sk-x",
+            "base_url_template": "http://x",
+            "decisions": [{
+                "name": "d1",
+                "priority": 1,
+                "rules": {"type": "keyword", "name": "kw"},
+                "model_refs": [],
+            }],
+            "selection": {
+                "strategy": "latency_aware",
+                "latency_aware": {
+                    "tpot_percentile": 50,
+                    "ttft_percentile": 90,
+                    "latency_percentile": 50,
+                    "min_observations": 3,
+                    "fallback_to_weight": True,
+                    "weight_blend": 0.5,
+                },
+            },
+        })
+
+        insert_call = next(
+            call for call in mock_db.execute.call_args_list
+            if "INSERT INTO mini_router_tenant" in call.args[0]
+        )
+        sql, params = insert_call.args
+
+        # selection should be JSON-serialized into one of the params
+        json_params = [p for p in params if isinstance(p, str) and "latency_aware" in p]
+        assert len(json_params) == 1, "selection JSON should appear once in INSERT params"
+        decoded = json.loads(json_params[0])
+        assert decoded["strategy"] == "latency_aware"
+        assert decoded["latency_aware"]["tpot_percentile"] == 50
+
+    @pytest.mark.asyncio
+    async def test_get_tenant_parses_selection_json(self, mock_db):
+        """get_tenant_by_id must parse the selection JSON column back into a dict."""
+        mock_db.fetch_one.return_value = {
+            "tenant_id": "t-sel",
+            "apikey": "sk-x",
+            "base_url_template": "http://x",
+            "decisions": "[]",
+            "selection": '{"strategy": "static", "latency_aware": {}}',
+            "enabled": True,
+            "name": None,
+            "timeout": 120.0,
+            "apikey_pool_mode": "round_robin",
+            "version": 1,
+            "created_at": None,
+            "updated_at": None,
+        }
+
+        repo = ConfigRepository(mock_db)
+        row = await repo.get_tenant_by_id("t-sel")
+
+        assert isinstance(row["selection"], dict)
+        assert row["selection"]["strategy"] == "static"
+
+    @pytest.mark.asyncio
+    async def test_update_tenant_serializes_selection(self, mock_db):
+        """update_tenant must JSON-encode selection before writing."""
+        repo = ConfigRepository(mock_db)
+        await repo.update_tenant("t-sel", {
+            "selection": {"strategy": "round_robin", "latency_aware": {}},
+        })
+
+        update_call = next(
+            call for call in mock_db.execute.call_args_list
+            if "UPDATE mini_router_tenant" in call.args[0]
+        )
+        sql, params = update_call.args
+
+        assert "selection = %s" in sql
+        json_params = [p for p in params if isinstance(p, str) and "round_robin" in p]
+        assert len(json_params) == 1

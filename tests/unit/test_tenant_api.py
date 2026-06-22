@@ -53,7 +53,6 @@ def isolated_manager(temp_config_file, monkeypatch):
     manager.load()
 
     mock_config = MagicMock()
-    mock_config.decisions = []
     mock_router = MagicMock()
     mock_router.client = MagicMock()
     mock_router.route = AsyncMock(

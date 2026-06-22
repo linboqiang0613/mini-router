@@ -27,7 +27,6 @@ dev = [
 ]
 
 [project.scripts]
-mini-router = "mini_router.cli:main"
 mini-router-server = "mini_router.server:main"
 
 [build-system]

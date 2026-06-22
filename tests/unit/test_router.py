@@ -21,11 +21,17 @@ class TestRouter:
     """Tests for Router."""
 
     @pytest.mark.asyncio
-    async def test_basic_routing(self, basic_config: RouterConfig) -> None:
+    async def test_basic_routing(
+        self, basic_config: RouterConfig, basic_tenant
+    ) -> None:
         """Test basic routing flow."""
         router = Router(basic_config)
 
-        result = await router.route(RoutingRequest(query="How do I debug this code?"))
+        result = await router.route(
+            RoutingRequest(query="How do I debug this code?"),
+            decisions=basic_tenant.decisions,
+            selection=basic_tenant.selection,
+        )
 
         assert result.cache_hit is False
         assert result.selected_model == "codellama-70b"
@@ -33,11 +39,17 @@ class TestRouter:
         assert "code_related" in result.matched_rules
 
     @pytest.mark.asyncio
-    async def test_no_matching_decision(self, basic_config: RouterConfig) -> None:
+    async def test_no_matching_decision(
+        self, basic_config: RouterConfig, basic_tenant
+    ) -> None:
         """Test when no decision matches."""
         router = Router(basic_config)
 
-        result = await router.route(RoutingRequest(query="What is the weather today?"))
+        result = await router.route(
+            RoutingRequest(query="What is the weather today?"),
+            decisions=basic_tenant.decisions,
+            selection=basic_tenant.selection,
+        )
 
         assert result.selected_model is None
         assert result.decision_name is None
@@ -45,6 +57,16 @@ class TestRouter:
     @pytest.mark.asyncio
     async def test_reject_action(self) -> None:
         """Test reject action."""
+        reject_decisions = [
+            Decision(
+                name="reject_blocked",
+                priority=100,
+                rules=RuleNode(type=RuleType.KEYWORD, name="blocked"),
+                model_refs=[],
+                action=DecisionAction.REJECT,
+                reject_message="Content blocked",
+            ),
+        ]
         config = RouterConfig(
             models={
                 "base_url": "http://localhost:8000/v1",
@@ -58,27 +80,22 @@ class TestRouter:
                     ),
                 ],
             },
-            decisions=[
-                Decision(
-                    name="reject_blocked",
-                    priority=100,
-                    rules=RuleNode(type=RuleType.KEYWORD, name="blocked"),
-                    model_refs=[],
-                    action=DecisionAction.REJECT,
-                    reject_message="Content blocked",
-                ),
-            ],
             cache={"enabled": False},
         )
 
         router = Router(config)
-        result = await router.route(RoutingRequest(query="This contains blocked_word"))
+        result = await router.route(
+            RoutingRequest(query="This contains blocked_word"),
+            decisions=reject_decisions,
+        )
 
         assert result.action == DecisionAction.REJECT
         assert result.reject_message == "Content blocked"
 
     @pytest.mark.asyncio
-    async def test_cache_set_and_hit(self, basic_config: RouterConfig) -> None:
+    async def test_cache_set_and_hit(
+        self, basic_config: RouterConfig, basic_tenant
+    ) -> None:
         """Test cache set and hit."""
         # Enable cache for this test
         basic_config.cache.enabled = True
@@ -89,12 +106,18 @@ class TestRouter:
         await router.set_cache("cached query", "cached response")
 
         # Should get cache hit
-        result = await router.route(RoutingRequest(query="cached query"))
+        result = await router.route(
+            RoutingRequest(query="cached query"),
+            decisions=basic_tenant.decisions,
+            selection=basic_tenant.selection,
+        )
         assert result.cache_hit is True
         assert result.cache_response == "cached response"
 
     @pytest.mark.asyncio
-    async def test_clear_cache(self, basic_config: RouterConfig) -> None:
+    async def test_clear_cache(
+        self, basic_config: RouterConfig, basic_tenant
+    ) -> None:
         """Test cache clearing."""
         basic_config.cache.enabled = True
         router = Router(basic_config)
@@ -102,12 +125,30 @@ class TestRouter:
         await router.set_cache("query", "response")
         router.clear_cache()
 
-        result = await router.route(RoutingRequest(query="query"))
+        result = await router.route(
+            RoutingRequest(query="query"),
+            decisions=basic_tenant.decisions,
+            selection=basic_tenant.selection,
+        )
         assert result.cache_hit is False
 
     @pytest.mark.asyncio
     async def test_priority_ordering(self) -> None:
         """Test that higher priority decisions are evaluated first."""
+        priority_decisions = [
+            Decision(
+                name="urgent_route",
+                priority=100,
+                rules=RuleNode(type=RuleType.KEYWORD, name="urgent"),
+                model_refs=[ModelRef(model="urgent-model", weight=1.0)],
+            ),
+            Decision(
+                name="code_route",
+                priority=10,
+                rules=RuleNode(type=RuleType.KEYWORD, name="code"),
+                model_refs=[ModelRef(model="code-model", weight=1.0)],
+            ),
+        ]
         config = RouterConfig(
             models={"base_url": "http://localhost:8000/v1"},
             signals={
@@ -116,32 +157,29 @@ class TestRouter:
                     KeywordRule(name="urgent", keywords=["urgent"], operator=Operator.ANY),
                 ],
             },
-            decisions=[
-                Decision(
-                    name="urgent_route",
-                    priority=100,
-                    rules=RuleNode(type=RuleType.KEYWORD, name="urgent"),
-                    model_refs=[ModelRef(model="urgent-model", weight=1.0)],
-                ),
-                Decision(
-                    name="code_route",
-                    priority=10,
-                    rules=RuleNode(type=RuleType.KEYWORD, name="code"),
-                    model_refs=[ModelRef(model="code-model", weight=1.0)],
-                ),
-            ],
             cache={"enabled": False},
         )
 
         router = Router(config)
 
         # Both keywords match, but urgent has higher priority
-        result = await router.route(RoutingRequest(query="urgent code request"))
+        result = await router.route(
+            RoutingRequest(query="urgent code request"),
+            decisions=priority_decisions,
+        )
         assert result.decision_name == "urgent_route"
 
     @pytest.mark.asyncio
     async def test_request_routed_log_includes_request_id(self) -> None:
         """Routing logs should include the active request_id when present."""
+        log_decisions = [
+            Decision(
+                name="code_route",
+                priority=10,
+                rules=RuleNode(type=RuleType.KEYWORD, name="code"),
+                model_refs=[ModelRef(model="code-model", weight=1.0)],
+            ),
+        ]
         config = RouterConfig(
             models={"base_url": "http://localhost:8000/v1"},
             signals={
@@ -149,14 +187,6 @@ class TestRouter:
                     KeywordRule(name="code", keywords=["code"], operator=Operator.ANY),
                 ],
             },
-            decisions=[
-                Decision(
-                    name="code_route",
-                    priority=10,
-                    rules=RuleNode(type=RuleType.KEYWORD, name="code"),
-                    model_refs=[ModelRef(model="code-model", weight=1.0)],
-                ),
-            ],
             cache={"enabled": False},
         )
         router = Router(config)
@@ -166,7 +196,10 @@ class TestRouter:
             with pytest.MonkeyPatch.context() as m:
                 mock_info = MagicMock()
                 m.setattr("mini_router.router.router.logger.info", mock_info)
-                await router.route(RoutingRequest(query="code request"))
+                await router.route(
+                    RoutingRequest(query="code request"),
+                    decisions=log_decisions,
+                )
         finally:
             reset_request_log_context(token)
 
@@ -225,16 +258,20 @@ class TestRouterTenantDecisions:
 
     @pytest.mark.asyncio
     async def test_route_without_tenant_decisions_uses_default(
-        self, basic_config: RouterConfig
+        self, basic_config: RouterConfig, basic_tenant
     ) -> None:
-        """Test routing without tenant decisions uses default config decisions."""
+        """Test routing with tenant decisions matching basic_tenant fixture."""
         router = Router(basic_config)
 
-        # Route without tenant decisions (should use config decisions)
-        result = await router.route(RoutingRequest(query="How do I debug this code?"))
+        # Route with the basic_tenant decisions (mirror of former basic_config.decisions)
+        result = await router.route(
+            RoutingRequest(query="How do I debug this code?"),
+            decisions=basic_tenant.decisions,
+            selection=basic_tenant.selection,
+        )
 
         assert result.cache_hit is False
-        assert result.selected_model == "codellama-70b"  # From basic_config
+        assert result.selected_model == "codellama-70b"  # From basic_tenant
         assert result.decision_name == "route_to_code_model"
 
     @pytest.mark.asyncio

@@ -97,17 +97,7 @@ curl -X DELETE http://localhost:8080/v1/cache
 curl http://localhost:8080/v1/config
 ```
 
-### 3. 运行 Demo
-
-```bash
-# 安装后直接运行
-mini-router
-
-# 或者
-python -m mini_router.cli
-```
-
-### 4. 编程使用
+### 3. 编程使用
 
 ```python
 import asyncio

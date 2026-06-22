@@ -546,15 +546,7 @@ pytest tests/
 pytest --cov=mini_router tests/
 ```
 
-### 8.2 运行 Demo
-
-```bash
-mini-router
-# 或
-python -m mini_router.cli
-```
-
-### 8.3 代码风格检查
+### 8.2 代码风格检查
 
 ```bash
 ruff check mini_router/

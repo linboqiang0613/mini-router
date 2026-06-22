@@ -126,7 +126,7 @@ async def load_config_from_db(repository: Any) -> RouterConfig:
     """Load router configuration from database.
 
     Called by server.py after database connection is established.
-    Reads models/signals/decisions from mini_router_config.config_data.
+    Reads models/signals/cache from mini_router_config.config_data.
 
     Args:
         repository: ConfigRepository instance
@@ -135,14 +135,34 @@ async def load_config_from_db(repository: Any) -> RouterConfig:
         RouterConfig from database
 
     Raises:
-        ValueError: If database has no global config
+        ValueError: If database has no global config, or if it carries legacy
+            global 'decisions'/'selection' fields (moved to tenant config in
+            commit 2db4336).
     """
     config_data = await repository.get_global_config()
 
     if not config_data or not config_data.get("config_data"):
         raise ValueError("Database has no global config in mini_router_config table")
 
-    router_config = RouterConfig.from_dict(config_data["config_data"])
+    raw = config_data["config_data"]
+
+    if "decisions" in raw:
+        raise ValueError(
+            "Database mode no longer accepts global 'decisions' in "
+            "mini_router_config.config_data; move routing decisions into "
+            "tenant configuration. If your DB has legacy data, run "
+            "scripts/migrations/0002_strip_obsolete_global_fields_in_config_data.sql."
+        )
+
+    if "selection" in raw:
+        raise ValueError(
+            "Database mode no longer accepts global 'selection' in "
+            "mini_router_config.config_data; move selection strategy into "
+            "tenant configuration. If your DB has legacy data, run "
+            "scripts/migrations/0002_strip_obsolete_global_fields_in_config_data.sql."
+        )
+
+    router_config = RouterConfig.from_dict(raw)
     logger.info(
         "config_loaded_from_db",
         version=config_data.get("version"),

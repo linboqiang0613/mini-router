@@ -3,76 +3,79 @@
 
 Usage:
     python scripts/yaml_to_mysql.py --config config.yaml --tenants config/tenants.yaml
+
+Both `migrate_config` and `migrate_tenants` delegate to the canonical YAML loaders
+(`load_yaml_config` and `TenantManager.load`) so the latest input validation rules
+are applied before anything touches the database. Legacy yaml inputs (global
+decisions/selection, tenants missing decisions/selection) fail loud here for the
+same reason they fail loud at server startup.
 """
 
 import argparse
 import asyncio
 import json
-import sys
 from pathlib import Path
-from mini_router.database import DatabaseConfig
 
-import yaml
+from mini_router.database import DatabaseConfig
 
 
 async def migrate_config(config_path: str, db_config: DatabaseConfig) -> None:
-    """Migrate global config to database."""
-    from mini_router.database import DatabaseConnection, ConfigRepository
+    """Migrate the global config YAML into mini_router_config.
 
-    # Read YAML
-    with open(config_path) as f:
-        data = yaml.safe_load(f)
+    Uses load_yaml_config so legacy `decisions` / `selection` keys are rejected
+    before any database round-trip.
+    """
+    from mini_router.config.loader import load_yaml_config
+    from mini_router.database import DatabaseConnection
 
-    # Initialize database
+    # Validation first — runs before we open any DB connection.
+    router_config = load_yaml_config(config_path)
+    config_dict = router_config.model_dump(mode="json", exclude={"database"})
+    config_json = json.dumps(config_dict)
+
     db = DatabaseConnection(db_config)
     await db.connect()
-    repo = ConfigRepository(db)
-
-    # Insert global config
-    config_json = json.dumps(data)
-    await db.execute(
-        "INSERT INTO mini_router_config (config_data, version) VALUES (%s, 1) "
-        "ON DUPLICATE KEY UPDATE config_data = %s, version = version + 1",
-        (config_json, config_json)
-    )
-
-    print(f"Migrated global config from {config_path}")
-    await db.close()
+    try:
+        await db.execute(
+            "INSERT INTO mini_router_config (config_data, version) VALUES (%s, 1) "
+            "ON DUPLICATE KEY UPDATE config_data = %s, version = version + 1",
+            (config_json, config_json),
+        )
+        print(f"Migrated global config from {config_path}")
+    finally:
+        await db.close()
 
 
 async def migrate_tenants(tenants_path: str, db_config: DatabaseConfig) -> None:
-    """Migrate tenant configs to database."""
-    from mini_router.database import DatabaseConnection, ConfigRepository
+    """Migrate tenant configs into mini_router_tenant + mini_router_apikey_pool.
 
-    # Read YAML
-    with open(tenants_path) as f:
-        data = yaml.safe_load(f)
+    Uses TenantManager.load so legacy tenant entries (missing decisions or
+    selection) are rejected before any database round-trip.
+    """
+    from mini_router.database import ConfigRepository, DatabaseConnection
+    from mini_router.tenant.manager import TenantManager
 
-    if not data or "tenants" not in data:
+    # Validation first — runs before we open any DB connection.
+    manager = TenantManager(yaml_path=tenants_path)
+    manager.load()
+    tenants = manager.list_all()
+
+    if not tenants:
         print(f"No tenants found in {tenants_path}")
         return
 
-    # Initialize database
     db = DatabaseConnection(db_config)
     await db.connect()
-    repo = ConfigRepository(db)
-
-    tenants = data.get("tenants", [])
-    for tenant_data in tenants:
-        tenant_id = tenant_data["tenant_id"]
-
-        # Insert tenant
-        await repo.create_tenant(tenant_data)
-
-        # Insert API key pool
-        apikey_pool = tenant_data.get("apikey_pool", [])
-        for i, key in enumerate(apikey_pool):
-            await repo.add_apikey_to_pool(tenant_id, key, i)
-
-        print(f"Migrated tenant: {tenant_id}")
-
-    print(f"Migrated {len(tenants)} tenants from {tenants_path}")
-    await db.close()
+    try:
+        repo = ConfigRepository(db)
+        for tenant in tenants:
+            await repo.create_tenant(tenant.model_dump(mode="json"))
+            for i, key in enumerate(tenant.apikey_pool):
+                await repo.add_apikey_to_pool(tenant.tenant_id, key, i)
+            print(f"Migrated tenant: {tenant.tenant_id}")
+        print(f"Migrated {len(tenants)} tenants from {tenants_path}")
+    finally:
+        await db.close()
 
 
 def main():
