@@ -83,24 +83,6 @@ def basic_config() -> RouterConfig:
                 ),
             ],
         ),
-        decisions=[
-            Decision(
-                name="route_to_code_model",
-                priority=10,
-                rules=RuleNode(type=RuleType.KEYWORD, name="code_related"),
-                model_refs=[
-                    ModelRef(model="codellama-70b", weight=1.0),
-                ],
-            ),
-            Decision(
-                name="route_to_math_model",
-                priority=5,
-                rules=RuleNode(type=RuleType.KEYWORD, name="math_related"),
-                model_refs=[
-                    ModelRef(model="llama-3-math", weight=1.0),
-                ],
-            ),
-        ],
         cache={"enabled": False},
     )
 
