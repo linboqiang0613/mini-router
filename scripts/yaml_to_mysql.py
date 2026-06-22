@@ -14,7 +14,6 @@ same reason they fail loud at server startup.
 import argparse
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 from mini_router.database import DatabaseConfig
