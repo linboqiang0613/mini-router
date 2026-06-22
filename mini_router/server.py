@@ -234,14 +234,14 @@ async def lifespan(app: FastAPI):
         logger.info("yaml_mode_enabled", config_path=config_path)
 
         _config = load_yaml_config(config_path)
-        logger.info("config_loaded_from_yaml", decisions=len(_config.decisions))
+        logger.info("config_loaded_from_yaml")
 
         _tenant_manager = TenantManager()
         _tenant_manager.load()
         logger.info("tenant_manager_initialized", tenants=len(_tenant_manager.list_all()))
 
         _router = Router(_config)
-        logger.info("router_initialized", decisions=len(_config.decisions), mode="yaml")
+        logger.info("router_initialized", mode="yaml")
     else:
         # === Database Mode ===
         logger.info("database_mode_enabled", env=env)
@@ -265,7 +265,7 @@ async def lifespan(app: FastAPI):
         try:
             _config = await load_config_from_db(_repository)
             _config.database = db_config
-            logger.info("config_loaded_from_db", decisions=len(_config.decisions))
+            logger.info("config_loaded_from_db")
         except Exception as e:
             logger.error("config_load_from_db_failed", error=str(e))
             raise RuntimeError(f"Failed to load config from database: {e}") from e
@@ -277,7 +277,7 @@ async def lifespan(app: FastAPI):
 
         # Initialize Router with repository
         _router = Router(_config, repository=_repository)
-        logger.info("router_initialized", decisions=len(_config.decisions), mode="database")
+        logger.info("router_initialized", mode="database")
 
         # Start sync service
         _sync_service = ConfigSyncService(

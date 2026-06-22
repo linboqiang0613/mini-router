@@ -217,8 +217,6 @@ class RouterConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     signals: SignalsConfig = Field(default_factory=SignalsConfig)
-    decisions: list[Decision] = Field(default_factory=list)
-    selection: SelectionConfig = Field(default_factory=SelectionConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     database: Optional[Any] = Field(default=None, description="Database configuration (set by loader)")
 

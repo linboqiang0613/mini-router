@@ -8,7 +8,13 @@ import structlog
 from mini_router.algorithm.selector import Registry
 from mini_router.algorithm.types import SelectionContext
 from mini_router.client import OpenAIClient
-from mini_router.config.config import Decision, DecisionAction, RouterConfig, SelectionConfig
+from mini_router.config.config import (
+    Decision,
+    DecisionAction,
+    RouterConfig,
+    SelectionConfig,
+    SelectionMethod,
+)
 from mini_router.decision.engine import Engine
 from mini_router.metrics.latency import LatencyTracker
 from mini_router.request_log_context import with_request_log_context
@@ -177,9 +183,13 @@ class Router:
             self.embedder = MockEmbedder()
 
         # === Decision Layer ===
+        # OPT-1: hardcoded empty fallback engine (RouterConfig no longer carries
+        # decisions/selection — routing policy lives only in TenantConfig).
+        # This engine is never reached in production paths because chat_proxy /
+        # request_pipeline always pass tenant.decisions to Router.route.
         self.decision_engine = Engine(
-            decisions=self.config.decisions,
-            strategy=self.config.selection.strategy.value,
+            decisions=[],
+            strategy=SelectionMethod.STATIC.value,
         )
 
         # === Algorithm Layer ===
@@ -217,7 +227,9 @@ class Router:
         4. Select model
         5. Return result
         """
-        active_selection = selection or self.config.selection
+        # OPT-1: fallback to default SelectionConfig (RouterConfig no longer
+        # carries selection). Production callers always pass tenant.selection.
+        active_selection = selection or SelectionConfig()
 
         # 1. Check cache
         if isinstance(self.cache, SemanticCache):

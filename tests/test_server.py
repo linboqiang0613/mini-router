@@ -26,7 +26,6 @@ class TestServerDatabaseIntegration:
 
         mock_config = MagicMock()
         mock_config.database = None
-        mock_config.decisions = []
 
         server_module.app.state.config_path = "config.yaml"
         server_module.app.state.env = "dev"
@@ -70,7 +69,6 @@ class TestServerDatabaseIntegration:
         mock_config.database.enabled = True
         mock_config.database.host = "localhost"
         mock_config.database.database = "test"
-        mock_config.decisions = []
 
         server_module.app.state.config_path = None
         server_module.app.state.env = "dev"
@@ -138,7 +136,6 @@ class TestServerDatabaseIntegration:
 
         mock_config = MagicMock()
         mock_config.database = None
-        mock_config.decisions = []
 
         server_module.app.state.config_path = "config.yaml"
         server_module.app.state.env = "dev"

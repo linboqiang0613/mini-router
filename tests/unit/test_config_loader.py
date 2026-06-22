@@ -85,7 +85,6 @@ signals:
 
         assert config.models.base_url == "https://api.example.com/v1"
         assert len(config.signals.keyword_rules) == 1
-        assert config.decisions == []
         assert config.database is None
 
     def test_load_yaml_config_rejects_global_decisions(self, tmp_path) -> None:
